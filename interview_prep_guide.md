@@ -152,24 +152,25 @@
   - [18.4 RAG — Retrieval-Augmented Generation](#184-rag--retrieval-augmented-generation)
   - [18.5 LangChain vs LangGraph](#185-langchain-vs-langgraph--orchestrating-llm-applications)
   - [18.6 MCP — Model Context Protocol](#186-mcp--model-context-protocol)
-  - [18.7 Prompt Engineering](#187-prompt-engineering--techniques-that-matter)
-  - [18.8 Evaluation, Guardrails & Production](#188-evaluation-guardrails--production-concerns)
-  - [18.9 RAG Deep Dive — Why Naive Approaches Fail](#189-rag-deep-dive--why-naive-approaches-fail)
-  - [18.10 LLM Optimization — Quantization, KV Cache, Batching](#1810-llm-optimization--quantization-kv-cache-batching--model-serving)
-  - [18.11 Structured Output & Advanced Prompting](#1811-structured-output--advanced-prompt-engineering)
-  - [18.12 Agentic AI — Multi-Agent, Tool Calling, Memory](#1812-agentic-ai--multi-agent-systems-tool-calling--memory)
-  - [18.13 AI Infrastructure — GPU Scheduling, Autoscaling, Cold Starts](#1813-ai-infrastructure--gpu-scheduling-autoscaling-cold-starts--model-routing)
-  - [18.14 Transformer Architecture — Self-Attention, Multi-Head, Masking, Q/K/V](#1814-transformer-architecture--self-attention-multi-head-attention-masking--qkv)
-  - [18.15 Fine-Tuning LLMs — LoRA, QLoRA, Catastrophic Forgetting & RAG vs Fine-Tuning](#1815-fine-tuning-llms--lora-qlora-catastrophic-forgetting--rag-vs-fine-tuning)
-  - [18.16 Advanced RAG — MMR, PDF Ingestion, Noise Filtering, Custom Chunking, BM25 & TF-IDF](#1816-advanced-rag--mmr-pdf-ingestion-noise-filtering-custom-chunking-bm25--tf-idf)
-  - [18.17 LLM Wrappers, LlamaIndex, OOV Embeddings & Semantic Boundaries](#1817-llm-wrappers-llamaindex-oov-embeddings--semantic-boundaries)
-  - [18.18 GenAI Interview Q&A Bank](#1818-genai-interview-qa-bank)
-  - [18.19 NumPy — Core Array Computing](#1819-numpy--core-array-computing)
-  - [18.20 Pandas — Data Manipulation & Analysis](#1820-pandas--data-manipulation--analysis)
-  - [18.21 Scikit-Learn — ML Pipeline & Model Training](#1821-scikit-learn--ml-pipeline--model-training)
-  - [18.22 NLP — Natural Language Processing Fundamentals](#1822-nlp--natural-language-processing-fundamentals)
-  - [18.23 Computer Vision — CNN, Object Detection & Image Processing](#1823-computer-vision--cnn-object-detection--image-processing)
-  - [18.24 Deep Agents — From Shallow Loops to Autonomous Reasoning Systems](#1824-deep-agents--from-shallow-loops-to-autonomous-reasoning-systems)
+  - [18.7 FastMCP — The Pythonic MCP Framework](#187-fastmcp--the-pythonic-mcp-framework)
+  - [18.8 Prompt Engineering](#188-prompt-engineering--techniques-that-matter)
+  - [18.9 Evaluation, Guardrails & Production](#189-evaluation-guardrails--production-concerns)
+  - [18.10 RAG Deep Dive — Why Naive Approaches Fail](#1810-rag-deep-dive--why-naive-approaches-fail)
+  - [18.11 LLM Optimization — Quantization, KV Cache, Batching](#1811-llm-optimization--quantization-kv-cache-batching--model-serving)
+  - [18.12 Structured Output & Advanced Prompting](#1812-structured-output--advanced-prompt-engineering)
+  - [18.13 Agentic AI — Multi-Agent, Tool Calling, Memory](#1813-agentic-ai--multi-agent-systems-tool-calling--memory)
+  - [18.14 AI Infrastructure — GPU Scheduling, Autoscaling, Cold Starts](#1814-ai-infrastructure--gpu-scheduling-autoscaling-cold-starts--model-routing)
+  - [18.15 Transformer Architecture — Self-Attention, Multi-Head, Masking, Q/K/V](#1815-transformer-architecture--self-attention-multi-head-attention-masking--qkv)
+  - [18.16 Fine-Tuning LLMs — LoRA, QLoRA, Catastrophic Forgetting & RAG vs Fine-Tuning](#1816-fine-tuning-llms--lora-qlora-catastrophic-forgetting--rag-vs-fine-tuning)
+  - [18.17 Advanced RAG — MMR, PDF Ingestion, Noise Filtering, Custom Chunking, BM25 & TF-IDF](#1817-advanced-rag--mmr-pdf-ingestion-noise-filtering-custom-chunking-bm25--tf-idf)
+  - [18.18 LLM Wrappers, LlamaIndex, OOV Embeddings & Semantic Boundaries](#1818-llm-wrappers-llamaindex-oov-embeddings--semantic-boundaries)
+  - [18.19 GenAI Interview Q&A Bank](#1819-genai-interview-qa-bank)
+  - [18.20 NumPy — Core Array Computing](#1820-numpy--core-array-computing)
+  - [18.21 Pandas — Data Manipulation & Analysis](#1821-pandas--data-manipulation--analysis)
+  - [18.22 Scikit-Learn — ML Pipeline & Model Training](#1822-scikit-learn--ml-pipeline--model-training)
+  - [18.23 NLP — Natural Language Processing Fundamentals](#1823-nlp--natural-language-processing-fundamentals)
+  - [18.24 Computer Vision — CNN, Object Detection & Image Processing](#1824-computer-vision--cnn-object-detection--image-processing)
+  - [18.25 Deep Agents — From Shallow Loops to Autonomous Reasoning Systems](#1825-deep-agents--from-shallow-loops-to-autonomous-reasoning-systems)
 
 **Message Brokers & Search Engines**
 
@@ -12977,7 +12978,294 @@ async def main():
 
 ---
 
-### 18.7 Prompt Engineering — Techniques That Matter
+### 18.7 FastMCP — The Pythonic MCP Framework
+
+> **📣 Interview-ready definition:** *"FastMCP is a high-level Python framework built on top of the official MCP SDK that replaces the low-level boilerplate (JSON schemas, manual dispatchers, transport wiring) with a decorator-based API. You write a normal Python function, add `@mcp.tool()`, and FastMCP auto-generates the JSON schema from type hints and docstrings. It's the 'FastAPI of MCP' — same pattern of turning Python functions into protocol-compliant endpoints with zero boilerplate."*
+
+#### Why FastMCP over the raw MCP SDK?
+
+```python
+# === Raw MCP SDK — verbose, imperative ===
+from mcp.server import Server
+from mcp.types import Tool, TextContent
+
+server = Server("my-server")
+
+@server.list_tools()                     # manual registration
+async def list_tools():
+    return [Tool(
+        name="add",
+        description="Add two numbers",
+        inputSchema={                    # hand-written JSON schema
+            "type": "object",
+            "properties": {
+                "a": {"type": "integer"},
+                "b": {"type": "integer"},
+            },
+            "required": ["a", "b"],
+        },
+    )]
+
+@server.call_tool()                      # manual dispatcher
+async def call_tool(name: str, arguments: dict):
+    if name == "add":
+        return [TextContent(type="text", text=str(arguments["a"] + arguments["b"]))]
+
+# === FastMCP — Pythonic, declarative ===
+from fastmcp import FastMCP
+
+mcp = FastMCP("my-server")
+
+@mcp.tool()                              # one decorator, done
+def add(a: int, b: int) -> int:
+    """Add two numbers."""               # docstring → tool description
+    return a + b                         # type hints → JSON schema auto-generated
+```
+
+**What FastMCP auto-generates from that function:**
+- Tool name: `"add"` (from function name)
+- Description: `"Add two numbers."` (from docstring)
+- Input schema: `{"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]}` (from type hints)
+- Return handling: serialises the return value automatically
+
+#### The Three Primitives in FastMCP
+
+```python
+from fastmcp import FastMCP, Context
+
+mcp = FastMCP("demo-server")
+
+# ═══ 1. TOOLS — executable actions the LLM can invoke ═══
+@mcp.tool()
+def search_orders(customer_id: str, status: str = "all") -> list[dict]:
+    """Search orders by customer ID and optional status filter."""
+    return db.query(f"SELECT * FROM orders WHERE customer_id = '{customer_id}'")
+
+@mcp.tool()
+async def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email to a customer. Requires human approval."""
+    await email_service.send(to, subject, body)
+    return f"Email sent to {to}"
+
+# ═══ 2. RESOURCES — read-only data the application can pull ═══
+@mcp.resource("config://app/settings")
+def get_settings() -> str:
+    """Returns current application configuration."""
+    return json.dumps({"theme": "dark", "language": "en", "region": "US"})
+
+@mcp.resource("db://users/{user_id}")          # URI templates for dynamic resources
+def get_user(user_id: str) -> str:
+    """Fetch a user profile by ID."""
+    user = db.get_user(user_id)
+    return json.dumps(user.to_dict())
+
+# ═══ 3. PROMPTS — reusable prompt templates ═══
+@mcp.prompt()
+def summarise_document(document: str, style: str = "concise") -> str:
+    """Generate a prompt for document summarisation."""
+    return f"Summarise the following document in a {style} style:\n\n{document}"
+```
+
+#### The Context Object — Server Features Inside Tools
+
+```python
+@mcp.tool()
+async def analyse_dataset(file_path: str, ctx: Context) -> str:
+    """Analyse a CSV dataset with progress reporting."""
+
+    # Logging — appears in the MCP client's log stream
+    ctx.info(f"Starting analysis of {file_path}")
+    ctx.warning("Large file detected, this may take a while")
+
+    # Progress reporting — client can show a progress bar
+    total_rows = count_rows(file_path)
+    for i, chunk in enumerate(read_chunks(file_path)):
+        process(chunk)
+        await ctx.report_progress(i * 100, total_rows)    # (current, total)
+
+    ctx.info("Analysis complete")
+    return json.dumps(results)
+
+# Context is injected by type annotation — FastMCP sees `ctx: Context`
+# and automatically provides it. The LLM never sees it as a parameter.
+```
+
+#### Transport Options — stdio vs Streamable HTTP
+
+```python
+# ═══ Local (stdio) — for desktop apps like Claude Desktop, Cursor ═══
+# The MCP host spawns the server as a child process, communicates via stdin/stdout
+if __name__ == "__main__":
+    mcp.run()                              # default: transport="stdio"
+
+# ═══ Remote (Streamable HTTP) — for networked/production deployments ═══
+# Modern bidirectional transport over HTTP, replaces the older SSE approach
+if __name__ == "__main__":
+    mcp.run(
+        transport="streamable-http",       # recommended for remote
+        host="0.0.0.0",
+        port=8000,
+    )
+# Server accessible at http://0.0.0.0:8000/mcp
+
+# ═══ Legacy SSE — still supported for backward compatibility ═══
+if __name__ == "__main__":
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)
+```
+
+| Transport | Use Case | Direction | Protocol |
+|---|---|---|---|
+| `stdio` | Local desktop apps (Claude, Cursor) | Bidirectional | stdin/stdout |
+| `streamable-http` | Remote/production servers | Bidirectional | HTTP POST + streaming |
+| `sse` | Legacy remote deployments | Server→client stream | HTTP GET + EventSource |
+
+#### Server Composition — Microservices for MCP
+
+```python
+# ═══ Mounting: combine multiple servers into one ═══
+from fastmcp import FastMCP
+
+# Specialised sub-servers
+analytics = FastMCP("analytics")
+
+@analytics.tool()
+def run_report(metric: str) -> str:
+    """Run an analytics report."""
+    return f"Report for {metric}: ..."
+
+payments = FastMCP("payments")
+
+@payments.tool()
+def charge_customer(customer_id: str, amount: float) -> str:
+    """Charge a customer."""
+    return f"Charged {customer_id} ${amount}"
+
+# Main server mounts sub-servers with prefixes
+main = FastMCP("gateway")
+
+main.mount(analytics, prefix="analytics")    # tools become: analytics_run_report
+main.mount(payments, prefix="payments")      # tools become: payments_charge_customer
+
+# Client sees ONE server with namespaced tools
+# Separation of concerns: each sub-server is independently testable
+
+# ═══ Importing: static copy of tools into parent ═══
+main.import_server(analytics)    # copies tools directly (no prefix, no isolation)
+```
+
+**Mounting modes:**
+- **Direct mount (default)** — parent calls sub-server methods in-process. Fast, shared memory.
+- **Proxy mount** — parent treats sub-server as a separate client connection. Preserves lifecycle isolation.
+
+#### Proxy Pattern — Transport Bridging
+
+```python
+# Problem: your MCP server runs via stdio (local only)
+# Solution: wrap it in a FastMCP proxy that exposes it over HTTP
+
+from fastmcp import FastMCP
+
+# Create a proxy that forwards to a remote/local server
+proxy = FastMCP.as_proxy(
+    "http://internal-server:8000/mcp"      # backend server URL
+)
+
+# The proxy is itself an MCP server — run it on a different transport
+proxy.run(transport="streamable-http", port=9000)
+
+# Use case: expose an internal stdio server to the internet
+# Use case: add auth middleware in front of an existing server
+# Use case: aggregate multiple backend servers behind one endpoint
+```
+
+#### OpenAPI & FastAPI Integration
+
+```python
+# ═══ From OpenAPI spec → MCP server (zero code) ═══
+from fastmcp import FastMCP
+
+# Automatically generate MCP tools from an OpenAPI spec
+mcp = FastMCP.from_openapi(
+    url="https://api.example.com/openapi.json",    # or a local file path
+    name="example-api"
+)
+# Every endpoint in the spec becomes an MCP tool automatically
+# GET /users/{id}  →  tool: get_users_by_id(id: str)
+# POST /orders     →  tool: create_order(body: dict)
+
+# ═══ From FastAPI app → MCP server ═══
+from fastapi import FastAPI
+from fastmcp import FastMCP
+
+app = FastAPI()
+
+@app.get("/users/{user_id}")
+def get_user(user_id: str):
+    return {"id": user_id, "name": "Alice"}
+
+@app.post("/orders")
+def create_order(item: str, quantity: int):
+    return {"order_id": "abc123", "item": item, "quantity": quantity}
+
+# Convert your existing FastAPI app into an MCP server
+mcp = FastMCP.from_fastapi(app, name="my-api")
+
+# Now LLMs can call your REST endpoints as MCP tools
+# No rewriting — your existing API logic is reused as-is
+```
+
+#### FastMCP Client — Programmatic Access
+
+```python
+from fastmcp import Client
+
+# Connect to any MCP server (FastMCP or not)
+async with Client("http://localhost:8000/mcp") as client:
+    # Discover available tools
+    tools = await client.list_tools()
+    print([t.name for t in tools])     # ["add", "search_orders", ...]
+
+    # Call a tool
+    result = await client.call_tool("add", {"a": 5, "b": 3})
+    print(result)                       # 8
+
+    # Read a resource
+    settings = await client.read_resource("config://app/settings")
+    print(settings)                     # {"theme": "dark", ...}
+
+# Also works with stdio servers:
+async with Client("python my_server.py") as client:
+    ...
+```
+
+#### Interview Q&A — FastMCP
+
+> **Q: What problem does FastMCP solve that the raw MCP SDK doesn't?**
+> A: Boilerplate. The raw SDK requires you to write JSON schemas by hand, implement `list_tools` and `call_tool` dispatchers, and wire up transport manually. FastMCP derives everything from Python type hints and docstrings — one `@mcp.tool()` decorator replaces ~20 lines of schema/dispatcher code. Same relationship as FastAPI to raw ASGI.
+
+> **Q: How does FastMCP auto-generate the JSON schema?**
+> A: It inspects the function's type annotations (via `inspect` + Pydantic) and docstring. `def add(a: int, b: int) -> int` becomes `{"properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]}`. Pydantic models as parameters generate nested schemas. The docstring becomes the tool description.
+
+> **Q: What's the difference between tools, resources, and prompts?**
+> A: Tools are **actions** the LLM invokes (write to DB, send email) — model-controlled. Resources are **read-only data** the application pulls (file contents, configs) — app-controlled. Prompts are **reusable templates** the user selects (summarisation template, code review template) — user-controlled. Think: tools = POST, resources = GET, prompts = templates.
+
+> **Q: What is server composition and when would you use it?**
+> A: Mounting sub-servers onto a main server with prefixes — like microservices for MCP. Use it when you have multiple domains (analytics, payments, users) that should be independently developed and tested but exposed as one MCP server to the AI host. Tools get namespaced (`analytics_run_report`) to avoid collisions.
+
+> **Q: How does the proxy pattern work?**
+> A: `FastMCP.as_proxy(backend_url)` creates a transparent intermediary that forwards all MCP operations to a backend server. Use cases: transport bridging (expose a stdio server over HTTP), adding auth middleware, aggregating multiple backends behind one endpoint, or load balancing.
+
+> **Q: How would you expose an existing REST API to LLMs?**
+> A: Two options: (1) `FastMCP.from_openapi(spec_url)` auto-generates tools from an OpenAPI spec — zero code. (2) `FastMCP.from_fastapi(app)` converts a FastAPI application directly. Both reuse existing API logic without rewriting. The LLM sees MCP tools; the backend sees normal HTTP requests.
+
+> **Q: stdio vs streamable-http — when to use which?**
+> A: stdio for local desktop integrations (Claude Desktop, Cursor) — the host spawns the server as a child process. Streamable HTTP for remote/production — bidirectional over HTTP, supports multiple concurrent clients, deployable behind a load balancer. SSE is legacy; use streamable-http for new projects.
+
+📌 **TLDR:** "FastMCP = 'FastAPI for MCP'. One `@mcp.tool()` decorator turns a Python function into a protocol-compliant MCP tool — type hints become JSON schemas, docstrings become descriptions. Supports 3 transports (stdio/streamable-http/SSE), server composition via mounting, proxy pattern for transport bridging, and auto-generation from OpenAPI specs or FastAPI apps. The `Context` object gives tools logging, progress reporting, and session access. Use it whenever you'd build an MCP server — it replaces ~80% of the boilerplate."
+
+---
+
+### 18.8 Prompt Engineering — Techniques That Matter
 
 > **📣 Definition:** _"Prompt engineering is designing LLM inputs for reliable outputs. Core techniques: zero-shot (no examples), few-shot (examples in prompt), chain-of-thought (step-by-step reasoning), system prompts (persona/constraints). Key parameters: temperature (randomness) and top-p (nucleus sampling). The senior-level skill is knowing when prompting fails and you need RAG, fine-tuning, or guardrails."_
 
@@ -13019,7 +13307,7 @@ Answer: 55"""
 
 ---
 
-### 18.8 Evaluation, Guardrails & Production Concerns
+### 18.9 Evaluation, Guardrails & Production Concerns
 
 > **📣 Definition:** _"Evaluating LLM apps requires different metrics than traditional ML. For RAG: faithfulness, relevance, precision, recall (RAGAS). For general quality: LLM-as-a-judge, human eval. Guardrails protect against prompt injection, PII leakage, hallucinations, and toxic output. The production stack: log all LLM calls, track token costs, monitor latency, A/B test prompts."_
 
@@ -13076,7 +13364,7 @@ class TokenBudget:
 
 ---
 
-### 18.9 RAG Deep Dive — Why Naive Approaches Fail
+### 18.10 RAG Deep Dive — Why Naive Approaches Fail
 
 > **📣 Definition:** _"Production RAG is hard not because the concept is complex, but because every stage has subtle failure modes. Naive chunking destroys context, naive retrieval has low precision, naive generation hallucinates, and naive architectures have unacceptable latency. The interview differentiator is knowing WHY each naive approach fails and what to replace it with."_
 
@@ -13167,7 +13455,7 @@ Sweet spot: retrieve top-20 → re-rank → send top-5 to LLM.
 
 ---
 
-### 18.10 LLM Optimization — Quantization, KV Cache, Batching & Model Serving
+### 18.11 LLM Optimization — Quantization, KV Cache, Batching & Model Serving
 
 > **📣 Definition:** _"LLM optimization is about making models faster, cheaper, and deployable at scale. Quantization reduces model size (FP16→INT4 = 4× smaller, ~5% quality loss). KV cache avoids recomputing attention for previous tokens. Batching amortizes GPU overhead across requests. Speculative decoding uses a small model to draft, large model to verify. Model serving frameworks (vLLM, TGI) combine all of these into production-ready inference servers."_
 
@@ -13281,7 +13569,7 @@ response = client.chat.completions.create(
 
 ---
 
-### 18.11 Structured Output & Advanced Prompt Engineering
+### 18.12 Structured Output & Advanced Prompt Engineering
 
 > **📣 Definition:** _"Beyond basic prompting, production LLM systems need structured output enforcement (guaranteed JSON/schema compliance), prompt injection defense, and output guardrails. The 2026 standard: use the model's native structured output mode (OpenAI's `response_format`, Anthropic's tool_use) or a validation layer (Pydantic + Instructor) to guarantee schema compliance."_
 
@@ -13381,7 +13669,7 @@ def validate_output(response: str) -> str:
 
 ---
 
-### 18.12 Agentic AI — Multi-Agent Systems, Tool Calling & Memory
+### 18.13 Agentic AI — Multi-Agent Systems, Tool Calling & Memory
 
 > **📣 Definition:** _"Agentic AI systems use LLMs not just to generate text but to reason, plan, use tools, and take actions autonomously. The key architecture: a planning/reasoning loop (think → act → observe → repeat) with tool calling for external actions, memory for context persistence, and failure handling for robustness. Multi-agent systems split complex tasks across specialized agents that collaborate."_
 
@@ -13577,7 +13865,7 @@ else:
 
 ---
 
-### 18.13 AI Infrastructure — GPU Scheduling, Autoscaling, Cold Starts & Model Routing
+### 18.14 AI Infrastructure — GPU Scheduling, Autoscaling, Cold Starts & Model Routing
 
 > **📣 Definition:** _"AI infrastructure is the layer between your models and production traffic. It covers GPU scheduling (fitting multiple models on limited GPUs), autoscaling (scaling inference servers based on demand), inference optimization (maximizing tokens/second per dollar), cold start mitigation (the delay when spinning up a new instance), and model routing (directing requests to the right model based on complexity, cost, or latency). This is the 'ops' side of AI engineering — and interviews increasingly test it."_
 
@@ -13711,7 +13999,7 @@ Strategies:
 
 ---
 
-### 18.14 Transformer Architecture — Self-Attention, Multi-Head Attention, Masking & Q/K/V
+### 18.15 Transformer Architecture — Self-Attention, Multi-Head Attention, Masking & Q/K/V
 
 > **📣 Definition:** _"The Transformer (Vaswani et al., 2017 — 'Attention Is All You Need') replaced recurrent architectures with a fully attention-based model. It has an encoder (understands input) and a decoder (generates output). The core mechanism is self-attention: every token computes how much it should 'attend to' every other token via Query, Key, Value matrices. Multi-head attention runs this in parallel across multiple subspaces. Masking prevents the decoder from cheating by looking at future tokens. Modern LLMs (GPT, LLaMA) are decoder-only; BERT is encoder-only."_
 
@@ -13914,7 +14202,7 @@ Do transformers prioritize larger inputs or faster processing?
 
 ---
 
-### 18.15 Fine-Tuning LLMs — LoRA, QLoRA, Catastrophic Forgetting & RAG vs Fine-Tuning
+### 18.16 Fine-Tuning LLMs — LoRA, QLoRA, Catastrophic Forgetting & RAG vs Fine-Tuning
 
 > **📣 Definition:** _"Fine-tuning adapts a pre-trained LLM to a specific task or domain by further training it on a smaller, specialized dataset. Full fine-tuning updates all parameters (expensive). Parameter-Efficient Fine-Tuning (PEFT) methods like LoRA only update a tiny fraction (0.1-1%) of parameters — making fine-tuning accessible on a single GPU. The critical risk is catastrophic forgetting — where the model loses its general knowledge while learning the new task."_
 
@@ -14080,7 +14368,7 @@ BEST PRACTICE: Use top_p (adaptive) rather than top_k (fixed).
 
 ---
 
-### 18.16 Advanced RAG — MMR, PDF Ingestion, Noise Filtering, Custom Chunking, BM25 & TF-IDF
+### 18.17 Advanced RAG — MMR, PDF Ingestion, Noise Filtering, Custom Chunking, BM25 & TF-IDF
 
 > **📣 Definition:** _"Production RAG requires advanced retrieval optimization beyond basic vector search. MMR (Maximal Marginal Relevance) reduces redundancy in retrieved documents. BM25 and TF-IDF provide keyword-based retrieval that complements vector search. PDF ingestion is the hardest data format to handle (tables, images, multi-column layouts). Custom chunking (LLM-based, heading-based, tree-based) dramatically improves retrieval quality. Noise filtering before ingestion prevents garbage-in-garbage-out."_
 
@@ -14354,7 +14642,7 @@ Validation: always have a human review ~10-20% of synthetic data
 
 ---
 
-### 18.17 LLM Wrappers, LlamaIndex, OOV Embeddings & Semantic Boundaries
+### 18.18 LLM Wrappers, LlamaIndex, OOV Embeddings & Semantic Boundaries
 
 > **📣 Definition:** _"LLM Wrappers are abstraction layers that provide a unified interface over different LLM providers (OpenAI, Anthropic, local models) — handling retries, streaming, token counting, and provider switching. LlamaIndex (formerly GPT Index) is a data framework specifically optimized for RAG, with built-in indexing strategies. Handling unknown vocabulary (OOV) in embeddings is critical for domain-specific RAG. Semantic boundary detection ensures chunks split at topic transitions, not mid-thought."_
 
@@ -14596,7 +14884,7 @@ VALIDATION LAYERS:
 
 ---
 
-### 18.18 GenAI Interview Q&A Bank
+### 18.19 GenAI Interview Q&A Bank
 
 **Q1. What are Prompt Templates?**
 
@@ -14612,7 +14900,7 @@ VALIDATION LAYERS:
 
 **Q4. What are Agents and how do they work?**
 
-> Agents use LLMs as reasoning engines that decide WHICH tool to call and WHEN to stop. The ReAct loop: Think → Act (call tool) → Observe (tool result) → Repeat. The LLM plans; deterministic code executes tools safely. Key components: tool definitions (JSON schema), agent executor (loop), memory (state), and safety rails (max iterations, tool validation). See section 18.12 for full details.
+> Agents use LLMs as reasoning engines that decide WHICH tool to call and WHEN to stop. The ReAct loop: Think → Act (call tool) → Observe (tool result) → Repeat. The LLM plans; deterministic code executes tools safely. Key components: tool definitions (JSON schema), agent executor (loop), memory (state), and safety rails (max iterations, tool validation). See section 18.13 for full details.
 
 **Q5. What are different strategies to split text?**
 
@@ -14624,7 +14912,7 @@ VALIDATION LAYERS:
 
 **Q7. How does embedding work for unknown/domain-specific vocabulary?**
 
-> BPE tokenizers split unknown words into known subwords — losing domain meaning ("CRISPR" → ["CR","IS","PR"]). Solutions: (1) embed terms IN CONTEXT (surrounding words help), (2) fine-tune embedding model on domain data, (3) hybrid search (BM25 catches exact terms that embeddings miss), (4) store synonyms/definitions in metadata, (5) inject domain glossary into prompts. See section 18.17 for details.
+> BPE tokenizers split unknown words into known subwords — losing domain meaning ("CRISPR" → ["CR","IS","PR"]). Solutions: (1) embed terms IN CONTEXT (surrounding words help), (2) fine-tune embedding model on domain data, (3) hybrid search (BM25 catches exact terms that embeddings miss), (4) store synonyms/definitions in metadata, (5) inject domain glossary into prompts. See section 18.18 for details.
 
 **Q8. How does vector database retrieve K closest documents?**
 
@@ -14640,7 +14928,7 @@ VALIDATION LAYERS:
 
 **Q11. How can you minimize irrelevant documents using MMR?**
 
-> MMR (Maximal Marginal Relevance) re-ranks results to balance relevance AND diversity. Formula: `λ × Sim(doc, query) - (1-λ) × max(Sim(doc, selected))`. Retrieve top-20 candidates → MMR selects top-5 that are relevant but non-redundant. Use `search_type="mmr"` with `lambda_mult=0.5` in LangChain. See section 18.16 for details.
+> MMR (Maximal Marginal Relevance) re-ranks results to balance relevance AND diversity. Formula: `λ × Sim(doc, query) - (1-λ) × max(Sim(doc, selected))`. Retrieve top-20 candidates → MMR selects top-5 that are relevant but non-redundant. Use `search_type="mmr"` with `lambda_mult=0.5` in LangChain. See section 18.17 for details.
 
 **Q12. What are evaluation metrics for a RAG solution?**
 
@@ -14664,7 +14952,7 @@ VALIDATION LAYERS:
 
 **Q17. How do you validate/audit LLM outputs in production?**
 
-> Schema validation (Pydantic/response_format), factual grounding check (LLM-as-judge for faithfulness), safety filters (PII, toxicity, injection artifacts), confidence scoring (LLM self-rates), full audit trail logging (prompt + context + response + tokens + latency), A/B testing of prompts, human-in-the-loop for high-stakes domains. Tools: LangSmith, Langfuse, Helicone. See section 18.17.
+> Schema validation (Pydantic/response_format), factual grounding check (LLM-as-judge for faithfulness), safety filters (PII, toxicity, injection artifacts), confidence scoring (LLM self-rates), full audit trail logging (prompt + context + response + tokens + latency), A/B testing of prompts, human-in-the-loop for high-stakes domains. Tools: LangSmith, Langfuse, Helicone. See section 18.18.
 
 📌 **TLDR:** "This Q&A bank covers the most frequently asked GenAI/LLM interview questions with concise, interview-ready answers. Each answer references the detailed section for deep dives. Practice delivering these in 60-90 seconds each — interviewers want clarity and structure, not 10-minute essays."
 
@@ -14676,7 +14964,7 @@ VALIDATION LAYERS:
 
 ---
 
-### 18.19 NumPy — Core Array Computing
+### 18.20 NumPy — Core Array Computing
 
 > **📣 Interview-ready definition:** *"NumPy is the foundational numerical computing library for Python. It provides an n-dimensional array object (`ndarray`) that stores homogeneous data in contiguous memory, enabling vectorised operations that run 10–100× faster than Python loops. Every ML library — Pandas, Scikit-Learn, PyTorch, TensorFlow — is built on top of NumPy arrays."*
 
@@ -14750,7 +15038,7 @@ np.where(a > 0, a, 0)           # conditional: ReLU in one line
 
 ---
 
-### 18.20 Pandas — Data Manipulation & Analysis
+### 18.21 Pandas — Data Manipulation & Analysis
 
 > **📣 Interview-ready definition:** *"Pandas provides DataFrame (2D labeled table) and Series (1D labeled array) data structures for tabular data manipulation. It's the standard for data cleaning, transformation, aggregation, and exploratory data analysis in Python. Built on NumPy — each column is a NumPy array internally."*
 
@@ -14837,7 +15125,7 @@ result = (
 
 ---
 
-### 18.21 Scikit-Learn — ML Pipeline & Model Training
+### 18.22 Scikit-Learn — ML Pipeline & Model Training
 
 > **📣 Interview-ready definition:** *"Scikit-Learn is the standard Python library for classical machine learning — classification, regression, clustering, and dimensionality reduction. Its power is the unified `fit/predict/transform` API and the Pipeline abstraction that chains preprocessing + model into a single reproducible object."*
 
@@ -14941,7 +15229,7 @@ clf = RandomForestClassifier(class_weight="balanced")
 
 ---
 
-### 18.22 NLP — Natural Language Processing Fundamentals
+### 18.23 NLP — Natural Language Processing Fundamentals
 
 > **📣 Interview-ready definition:** *"NLP is the branch of AI that deals with understanding, interpreting, and generating human language. Modern NLP has shifted from rule-based → statistical (TF-IDF, n-grams) → deep learning (RNNs, LSTMs) → transformers (BERT, GPT). For interviews, know both the classical pipeline AND the transformer era."*
 
@@ -15046,7 +15334,7 @@ embeddings = model.encode(["How are you?", "How do you do?"])
 
 ---
 
-### 18.23 Computer Vision — CNN, Object Detection & Image Processing
+### 18.24 Computer Vision — CNN, Object Detection & Image Processing
 
 > **📣 Interview-ready definition:** *"Computer Vision (CV) is the field of AI that enables machines to interpret visual data — images and video. The foundation is Convolutional Neural Networks (CNNs) that learn hierarchical features (edges → textures → parts → objects). Modern CV uses pre-trained models (ResNet, YOLO, Vision Transformers) and transfer learning."*
 
@@ -15148,7 +15436,7 @@ train_transform = transforms.Compose([
 
 ---
 
-### 18.24 Deep Agents — From Shallow Loops to Autonomous Reasoning Systems
+### 18.25 Deep Agents — From Shallow Loops to Autonomous Reasoning Systems
 
 > **📣 Interview-ready definition:** *"Deep Agents represent the 2025-2026 shift from simple reactive 'ReAct loops' (think → act → observe → repeat) to autonomous systems capable of long-horizon planning, dynamic tool discovery, memory management, and hierarchical delegation. The term covers both the DeepAgent research paper (arXiv:2510.21618 — end-to-end reasoning with memory folding) and the broader architectural pattern of building production agents that can sustain focus across complex, multi-step tasks lasting minutes to days."*
 
