@@ -179,6 +179,9 @@
   - [18.23 NLP — Natural Language Processing Fundamentals](#1823-nlp--natural-language-processing-fundamentals)
   - [18.24 Computer Vision — CNN, Object Detection & Image Processing](#1824-computer-vision--cnn-object-detection--image-processing)
   - [18.25 Deep Agents — From Shallow Loops to Autonomous Reasoning Systems](#1825-deep-agents--from-shallow-loops-to-autonomous-reasoning-systems)
+  - [18.26 Agentic Design Patterns — The Complete Catalog](#1826-agentic-design-patterns--the-complete-catalog)
+  - [18.27 Agent Task Tracking — How Agents & Sub-Agents Manage Work](#1827-agent-task-tracking--how-agents--sub-agents-manage-work)
+  - [18.28 Context Windows — Strategies, Memory Optimization & Production Patterns](#1828-context-windows--strategies-memory-optimization--production-patterns)
 
 **Message Brokers & Search Engines**
 
@@ -17340,6 +17343,1382 @@ Result: DeepAgent outperforms existing agents on ToolBench, ToolHop,
 
 ---
 
+### 18.26 Agentic Design Patterns — The Complete Catalog
+
+> **📣 Interview-ready definition:** _"Agentic patterns are reusable architectural blueprints for building LLM-powered autonomous systems. Each pattern solves a specific problem: ReAct for tool use, Plan-and-Execute for complex tasks, Reflection for self-correction, LATS for exploration, Self-Ask for multi-hop reasoning. A senior engineer picks the right pattern based on task complexity, latency budget, and reliability requirements — not by defaulting to one size fits all."_
+
+#### Pattern 1: ReAct (Reasoning + Acting) — The Foundation
+
+```
+The simplest and most common agentic pattern.
+LLM alternates between THINKING and ACTING in a loop.
+
+Flow:
+  User: "What's the weather in Mumbai and should I bring an umbrella?"
+  
+  [THINK] I need to check the weather in Mumbai
+  [ACT]   call get_weather(city="Mumbai")
+  [OBSERVE] {"temp": 32, "condition": "thunderstorm", "rain_prob": 85%}
+  [THINK] It's a thunderstorm with 85% rain probability — umbrella needed
+  [RESPOND] "Mumbai is 32°C with thunderstorms (85% rain). Bring an umbrella!"
+
+When to use: Simple tool-calling tasks (1-5 steps), well-defined tools
+When NOT:    Complex multi-step planning, tasks needing self-correction
+```
+
+```python
+# === ReAct with LangGraph (using create_react_agent) ===
+from langgraph.prebuilt import create_react_agent
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+
+@tool
+def get_weather(city: str) -> str:
+    """Get current weather for a city."""
+    return json.dumps({"temp": 32, "condition": "thunderstorm", "rain_prob": 0.85})
+
+@tool
+def search_web(query: str) -> str:
+    """Search the web for information."""
+    return "Results for: " + query
+
+agent = create_react_agent(
+    model=ChatOpenAI(model="gpt-4o"),
+    tools=[get_weather, search_web],
+    prompt="You are a helpful assistant. Use tools when needed.",
+)
+
+# The agent automatically loops: LLM → tool calls → LLM → ... → final answer
+result = agent.invoke({"messages": [HumanMessage("Weather in Mumbai?")]})
+```
+
+**Interview answer:** "ReAct is the simplest agent pattern — the LLM reasons about what to do, calls a tool, observes the result, and repeats. It's implemented in LangGraph as `create_react_agent` which builds a graph with an LLM node and a ToolNode connected in a loop. The loop exits when the LLM responds without tool calls. Good for straightforward tasks but fails on complex multi-step problems because the LLM holds everything in its context window with no explicit planning."
+
+---
+
+#### Pattern 2: Plan-and-Execute — Separate Planning from Doing
+
+```
+Problem: ReAct interleaves planning and execution — bad for complex tasks
+         because the LLM changes its plan mid-execution.
+
+Solution: Split into two phases:
+  PLANNER: Creates the full plan upfront (list of steps)
+  EXECUTOR: Executes each step, one at a time
+  RE-PLANNER: After each step, optionally revise the remaining plan
+
+Flow:
+  User: "Research competitor pricing and write a report"
+  
+  [PLAN]
+    Step 1: Search for competitor A pricing
+    Step 2: Search for competitor B pricing  
+    Step 3: Search for competitor C pricing
+    Step 4: Compare and analyze pricing strategies
+    Step 5: Write a structured report
+  
+  [EXECUTE Step 1] → call web_search("competitor A pricing 2026")
+  [OBSERVE]        → Found: $99/mo basic, $299/mo pro
+  [RE-PLAN]        → Plan is still good, continue to Step 2
+  [EXECUTE Step 2] → call web_search("competitor B pricing 2026")
+  ...
+  [EXECUTE Step 5] → Write report using all gathered data
+```
+
+```python
+# === Plan-and-Execute in LangGraph ===
+from pydantic import BaseModel
+
+class Plan(BaseModel):
+    steps: list[str]
+    current_step: int = 0
+
+class PlanExecuteState(MessagesState):
+    plan: Plan | None
+    step_results: Annotated[list[str], operator.add]
+
+def planner(state: PlanExecuteState):
+    """Create or revise the plan."""
+    if state.get("plan") is None:
+        # Initial planning
+        plan = llm.with_structured_output(Plan).invoke(
+            f"Create a step-by-step plan to accomplish this task. "
+            f"Be specific and actionable.\n\n"
+            f"Task: {state['messages'][-1].content}"
+        )
+        return {"plan": plan}
+    else:
+        # Re-planning after a step completed
+        plan = state["plan"]
+        results_so_far = "\n".join(state["step_results"])
+        revised = llm.with_structured_output(Plan).invoke(
+            f"Original plan: {plan.steps}\n"
+            f"Completed steps with results:\n{results_so_far}\n"
+            f"Current step: {plan.current_step}\n"
+            f"Revise the remaining plan if needed."
+        )
+        return {"plan": revised}
+
+def executor(state: PlanExecuteState):
+    """Execute the current step of the plan."""
+    plan = state["plan"]
+    current_step = plan.steps[plan.current_step]
+
+    # Use a ReAct agent to execute just this one step
+    step_agent = create_react_agent(llm, tools=[search_web, write_file])
+    result = step_agent.invoke({
+        "messages": [HumanMessage(f"Execute this step: {current_step}")]
+    })
+    step_result = result["messages"][-1].content
+
+    # Advance the plan
+    plan.current_step += 1
+    return {
+        "plan": plan,
+        "step_results": [f"Step {plan.current_step}: {step_result}"],
+    }
+
+def should_continue(state: PlanExecuteState):
+    plan = state["plan"]
+    if plan.current_step >= len(plan.steps):
+        return "done"
+    return "execute"   # or "replan" for re-planning between steps
+
+graph = StateGraph(PlanExecuteState)
+graph.add_node("planner", planner)
+graph.add_node("executor", executor)
+graph.add_node("respond", final_response)
+graph.add_edge(START, "planner")
+graph.add_edge("planner", "executor")
+graph.add_conditional_edges("executor", should_continue, {
+    "execute": "executor",     # next step
+    "replan": "planner",       # revise plan
+    "done": "respond",         # all steps done
+})
+graph.add_edge("respond", END)
+```
+
+**Interview answer:** "Plan-and-Execute separates planning from execution. The planner creates a structured list of steps upfront, and the executor handles one step at a time using a simple ReAct agent. After each step, a re-planner can revise the remaining plan based on results. This is better than ReAct for complex tasks because: (1) the plan is explicit and inspectable, (2) each step gets a clean context (no noise from previous steps), (3) the plan can adapt as new information appears. Tradeoff: higher latency (extra LLM call for planning)."
+
+---
+
+#### Pattern 3: Reflection — Self-Critique and Improvement
+
+```
+Problem: LLMs produce output in one shot — no self-editing.
+Solution: Add a critique step that reviews output and asks for improvements.
+
+Flow:
+  User: "Write a Python function to validate email addresses"
+  
+  [GENERATE] → writes initial code
+  [REFLECT]  → critic reviews: "Missing edge cases: +tags, unicode, 
+               length limits. No docstring. Test cases incomplete."
+  [REVISE]   → rewrites code addressing all critique points
+  [REFLECT]  → critic reviews: "Looks good. All edge cases handled."
+  [DONE]     → return final version
+
+This pattern improves code quality by 30-50% vs single-shot generation.
+```
+
+```python
+# === Reflection pattern in LangGraph ===
+class ReflectionState(MessagesState):
+    draft: str
+    critique: str
+    revision_count: int
+
+def generator(state: ReflectionState):
+    """Generate or revise content based on critique."""
+    if state.get("critique"):
+        prompt = (
+            f"Revise this draft based on the feedback:\n\n"
+            f"Draft:\n{state['draft']}\n\n"
+            f"Feedback:\n{state['critique']}\n\n"
+            f"Write an improved version."
+        )
+    else:
+        prompt = f"Write: {state['messages'][-1].content}"
+
+    result = llm.invoke(prompt)
+    return {"draft": result.content, "revision_count": state.get("revision_count", 0) + 1}
+
+def reflector(state: ReflectionState):
+    """Critique the current draft."""
+    critique = llm.invoke(
+        f"You are a senior code reviewer. Critique this output:\n\n"
+        f"{state['draft']}\n\n"
+        f"List specific issues: correctness, edge cases, style, "
+        f"completeness. If it's good, respond with 'APPROVED'."
+    )
+    return {"critique": critique.content}
+
+def should_revise(state: ReflectionState):
+    if "APPROVED" in state["critique"].upper():
+        return "done"
+    if state["revision_count"] >= 3:  # max revisions
+        return "done"
+    return "revise"
+
+graph = StateGraph(ReflectionState)
+graph.add_node("generate", generator)
+graph.add_node("reflect", reflector)
+graph.add_edge(START, "generate")
+graph.add_edge("generate", "reflect")
+graph.add_conditional_edges("reflect", should_revise, {
+    "revise": "generate",
+    "done": END,
+})
+```
+
+**Interview answer:** "Reflection adds a self-critique loop to any generation task. The generator produces output, the reflector critiques it, and the generator revises based on feedback. This loop runs until the critic approves or max iterations are hit. It dramatically improves output quality for code, writing, and analysis. In LangGraph, it's a simple two-node graph with a conditional edge back from reflector to generator."
+
+---
+
+#### Pattern 4: Self-Ask — Multi-Hop Reasoning with Sub-Questions
+
+```
+Problem: Complex questions require knowledge from multiple sources,
+         but the LLM tries to answer in one shot.
+
+Solution: The agent decomposes the question into sub-questions,
+          answers each independently, then synthesizes.
+
+Flow:
+  User: "Did the director of Inception also direct a movie with Leo DiCaprio 
+         that won Best Picture?"
+  
+  [SELF-ASK] Sub-Q1: "Who directed Inception?"
+  [SEARCH]   → Christopher Nolan
+  [SELF-ASK] Sub-Q2: "Which movies did Christopher Nolan direct with 
+              Leonardo DiCaprio?"
+  [SEARCH]   → Inception (2010)
+  [SELF-ASK] Sub-Q3: "Did any Christopher Nolan movie with Leonardo 
+              DiCaprio win Best Picture?"
+  [SEARCH]   → No — Inception was nominated but didn't win Best Picture
+  [ANSWER]   → "No. Christopher Nolan directed Inception with DiCaprio,
+               but it didn't win Best Picture."
+```
+
+```python
+# === Self-Ask pattern ===
+class SelfAskState(MessagesState):
+    sub_questions: list[str]
+    sub_answers: Annotated[list[str], operator.add]
+    final_answer: str | None
+
+def decompose(state: SelfAskState):
+    """Break the complex question into sub-questions."""
+    result = llm.with_structured_output(SubQuestions).invoke(
+        f"Decompose this question into simpler sub-questions that can be "
+        f"answered independently:\n{state['messages'][-1].content}"
+    )
+    return {"sub_questions": result.questions}
+
+def answer_sub_question(state: SelfAskState):
+    """Answer the next unanswered sub-question using search."""
+    idx = len(state.get("sub_answers", []))
+    question = state["sub_questions"][idx]
+    
+    # Use a simple ReAct agent for each sub-question
+    sub_agent = create_react_agent(llm, tools=[search_web])
+    result = sub_agent.invoke({"messages": [HumanMessage(question)]})
+    answer = result["messages"][-1].content
+    return {"sub_answers": [f"Q: {question}\nA: {answer}"]}
+
+def synthesize(state: SelfAskState):
+    """Combine sub-answers into a final answer."""
+    context = "\n\n".join(state["sub_answers"])
+    final = llm.invoke(
+        f"Based on these findings:\n{context}\n\n"
+        f"Answer the original question: {state['messages'][-1].content}"
+    )
+    return {"final_answer": final.content}
+
+def has_more_questions(state: SelfAskState):
+    answered = len(state.get("sub_answers", []))
+    total = len(state["sub_questions"])
+    return "answer_next" if answered < total else "synthesize"
+```
+
+---
+
+#### Pattern 5: LLM Compiler — Parallel Tool Execution
+
+```
+Problem: Sequential tool calling is slow when tools are independent.
+Solution: Identify independent tool calls, execute them in parallel.
+
+Flow:
+  User: "Compare weather in Mumbai, Delhi, and Bangalore"
+  
+  [PLAN] Three independent lookups — can run in parallel!
+  [PARALLEL EXECUTE]
+    ├── get_weather("Mumbai")    → 32°C, rain
+    ├── get_weather("Delhi")     → 45°C, sunny
+    └── get_weather("Bangalore") → 28°C, cloudy
+  [SYNTHESIZE] Compare results → "Delhi is hottest at 45°C..."
+
+  vs Sequential (3x slower):
+    get_weather("Mumbai") → wait → get_weather("Delhi") → wait → ...
+```
+
+```python
+# === LLM Compiler in LangGraph using Send() ===
+class CompilerState(TypedDict):
+    query: str
+    tasks: list[dict]  # [{"tool": "get_weather", "args": {"city": "Mumbai"}}]
+    results: Annotated[list[str], operator.add]
+
+def plan_parallel(state: CompilerState):
+    """Identify independent tasks that can run in parallel."""
+    plan = llm.with_structured_output(ParallelPlan).invoke(
+        f"Identify independent tool calls for: {state['query']}\n"
+        f"Mark dependencies. Group independent calls together."
+    )
+    return {"tasks": plan.tasks}
+
+def dispatch_tasks(state: CompilerState):
+    """Fan out to parallel workers using Send()."""
+    return [Send("execute_task", task) for task in state["tasks"]]
+
+def execute_task(state: dict):
+    """Execute a single tool call."""
+    tool_fn = TOOL_REGISTRY[state["tool"]]
+    result = tool_fn(**state["args"])
+    return {"results": [f"{state['tool']}({state['args']}): {result}"]}
+
+def synthesize(state: CompilerState):
+    """Combine parallel results."""
+    context = "\n".join(state["results"])
+    response = llm.invoke(f"Synthesize these results:\n{context}")
+    return {"results": [response.content]}
+
+graph = StateGraph(CompilerState)
+graph.add_node("plan", plan_parallel)
+graph.add_node("execute_task", execute_task)
+graph.add_node("synthesize", synthesize)
+graph.add_edge(START, "plan")
+graph.add_conditional_edges("plan", dispatch_tasks)
+graph.add_edge("execute_task", "synthesize")
+graph.add_edge("synthesize", END)
+```
+
+---
+
+#### Pattern 6: LATS (Language Agent Tree Search) — Explore Multiple Paths
+
+```
+Problem: Agent commits to one path; if it's wrong, it backtracks poorly.
+Solution: Explore multiple solution paths (tree search), evaluate each,
+          pick the best one. Like Monte Carlo Tree Search for agents.
+
+Flow:
+  User: "Write a function to find the shortest path in a weighted graph"
+  
+  [GENERATE] 3 candidate solutions in parallel:
+    Path A: Dijkstra's algorithm
+    Path B: Bellman-Ford algorithm
+    Path C: Floyd-Warshall algorithm
+  
+  [EVALUATE] Score each:
+    Path A: ✓ Correct for single-source, O(V²) — score 8/10
+    Path B: ✓ Handles negative weights — score 7/10
+    Path C: ✗ All-pairs, overkill for single query — score 4/10
+  
+  [EXPAND] Take best (Path A), generate variants:
+    Path A1: Dijkstra with min-heap (O(E log V)) — score 9/10
+    Path A2: Dijkstra with adjacency list — score 8/10
+  
+  [SELECT] Path A1 wins → return optimized Dijkstra
+
+When to use: High-stakes tasks where correctness matters more than speed
+             (code generation, math proofs, complex analysis)
+```
+
+**Interview answer:** "LATS treats agent problem-solving as tree search. Instead of committing to one path, it generates multiple candidate solutions, evaluates them with a scoring function, expands the most promising candidates, and repeats. It's inspired by MCTS in game AI. Use it when correctness matters more than latency — like generating code where one wrong implementation wastes more time than generating three and picking the best."
+
+---
+
+#### Pattern 7: Tool-Use with Verification — Trust but Verify
+
+```
+Problem: Tools can return errors, stale data, or unexpected formats.
+         Agent blindly trusts tool results.
+
+Solution: Add a verification step after every tool call.
+
+Flow:
+  [ACT]    call database_query("SELECT * FROM users WHERE id = 123")
+  [VERIFY] Is the result valid JSON? Does it have expected fields?
+           Is the data fresh (check timestamp)?
+  [PASS]   → continue with verified result
+  [FAIL]   → retry with modified query, or use fallback tool
+```
+
+```python
+# === Verification wrapper for tools ===
+@tool
+def verified_search(query: str) -> str:
+    """Search with automatic result verification."""
+    result = raw_search(query)
+    
+    # Verification layer
+    verification = llm.invoke(
+        f"Verify this search result is relevant to the query.\n"
+        f"Query: {query}\n"
+        f"Result: {result}\n"
+        f"Respond with RELEVANT or IRRELEVANT and why."
+    )
+    
+    if "IRRELEVANT" in verification.content:
+        # Retry with rephrased query
+        rephrased = llm.invoke(f"Rephrase this search query: {query}")
+        result = raw_search(rephrased.content)
+    
+    return result
+```
+
+---
+
+#### Pattern Comparison & Selection Guide
+
+| Pattern | Complexity | Latency | Quality | Best For |
+|---------|-----------|---------|---------|----------|
+| **ReAct** | Low | Low | Medium | Simple tool use (1-5 steps) |
+| **Plan-and-Execute** | Medium | Medium | High | Complex multi-step tasks |
+| **Reflection** | Medium | Medium | High | Content generation, code writing |
+| **Self-Ask** | Medium | Medium | High | Multi-hop reasoning, research |
+| **LLM Compiler** | Medium | **Low** | Medium | Independent parallel tasks |
+| **LATS** | High | **High** | **Highest** | High-stakes correctness |
+| **Verification** | Low | Medium | High | Unreliable tools, critical data |
+| **Supervisor** | Medium | Medium | Medium | Task routing, specialization |
+| **Swarm/Handoff** | Medium | Medium | Medium | Dynamic collaboration |
+| **Map-Reduce** | Medium | Low | Medium | Parallelizable processing |
+
+```
+Decision tree:
+  Is it a simple tool-calling task?
+    YES → ReAct
+    NO  ↓
+  Does it need multi-step planning?
+    YES → Plan-and-Execute
+    NO  ↓
+  Does it need self-improvement?
+    YES → Reflection
+    NO  ↓
+  Does it need multi-hop reasoning?
+    YES → Self-Ask
+    NO  ↓
+  Are there independent parallel tasks?
+    YES → LLM Compiler / Send()
+    NO  ↓
+  Does correctness trump latency?
+    YES → LATS
+    NO  ↓
+  Are multiple specialists needed?
+    YES → Supervisor or Swarm
+```
+
+📌 **TLDR:** "7 core agentic patterns: ReAct (think-act-observe loop), Plan-and-Execute (plan upfront, execute step-by-step), Reflection (generate-critique-revise loop), Self-Ask (decompose into sub-questions), LLM Compiler (parallel tool execution), LATS (tree search for multiple solution paths), and Verification (validate tool results). Pick based on: task complexity (ReAct for simple, Plan-Execute for complex), quality needs (Reflection, LATS for high-stakes), and latency (LLM Compiler for parallel speedup). In interviews, name the pattern, explain the flow, and say when you'd choose it over alternatives."
+
+---
+
+### 18.27 Agent Task Tracking — How Agents & Sub-Agents Manage Work
+
+> **📣 Interview-ready definition:** _"Production agents need explicit task tracking — knowing what's been done, what's in progress, and what's next. This separates toy agents from production ones. The key mechanisms: persistent task graphs (JSON/DB), state-based progress tracking (LangGraph state), checkpoint-based replay (time-travel debugging), and hierarchical delegation tracking (parent → sub-agent chains). Without explicit tracking, agents 'forget' their goals, repeat work, or abandon incomplete tasks."_
+
+#### Why Agents Need Explicit Task Tracking
+
+```
+WITHOUT task tracking (typical ReAct agent):
+  Context window:
+    [System prompt] [User message] [Tool call 1] [Result 1] [Tool call 2]
+    [Result 2] [Tool call 3] [Result 3] ... [Tool call 15] [Result 15]
+    
+  ⚠️ Problem: After 15 tool calls, the agent has:
+    - Forgotten the original goal (buried under tool noise)
+    - No idea which steps are done vs remaining
+    - No way to recover if context is lost
+    - No visibility for humans monitoring the agent
+
+WITH task tracking (production agent):
+  Persistent task file:
+    {
+      "objective": "Analyze competitor pricing and write report",
+      "steps": [
+        {"task": "Search competitor A pricing", "status": "done", "result": "$99/mo"},
+        {"task": "Search competitor B pricing", "status": "done", "result": "$149/mo"},
+        {"task": "Search competitor C pricing", "status": "in_progress"},
+        {"task": "Compare pricing strategies", "status": "pending"},
+        {"task": "Write structured report", "status": "pending"}
+      ],
+      "current_step": 2,
+      "started_at": "2026-05-25T10:00:00Z"
+    }
+  
+  ✅ Benefits: Agent can re-read its plan after context reset,
+     humans can inspect progress, sub-agents can update status
+```
+
+#### Mechanism 1: LangGraph State as Task Tracker
+
+```python
+# === Task tracking built into LangGraph state ===
+from pydantic import BaseModel
+from enum import Enum
+
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    DONE = "done"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+class Task(BaseModel):
+    id: str
+    description: str
+    status: TaskStatus = TaskStatus.PENDING
+    result: str | None = None
+    assigned_to: str | None = None  # which agent/sub-agent
+    error: str | None = None
+
+class AgentState(MessagesState):
+    objective: str
+    task_list: list[Task]
+    current_task_idx: int
+    completed_count: int
+    total_tasks: int
+
+def plan_tasks(state: AgentState):
+    """Create the initial task list."""
+    tasks = llm.with_structured_output(TaskPlan).invoke(
+        f"Break this into actionable tasks: {state['objective']}"
+    )
+    return {
+        "task_list": tasks.tasks,
+        "total_tasks": len(tasks.tasks),
+        "current_task_idx": 0,
+    }
+
+def execute_current_task(state: AgentState):
+    """Execute the current task and update its status."""
+    idx = state["current_task_idx"]
+    task = state["task_list"][idx]
+    
+    # Mark as in-progress
+    task.status = TaskStatus.IN_PROGRESS
+    
+    try:
+        # Execute with a ReAct agent scoped to this one task
+        sub_agent = create_react_agent(llm, tools=ALL_TOOLS)
+        result = sub_agent.invoke({
+            "messages": [HumanMessage(
+                f"Complete this task: {task.description}\n"
+                f"Context from previous tasks:\n"
+                + "\n".join(
+                    f"- {t.description}: {t.result}"
+                    for t in state["task_list"][:idx]
+                    if t.status == TaskStatus.DONE
+                )
+            )]
+        })
+        
+        # Mark as done
+        task.status = TaskStatus.DONE
+        task.result = result["messages"][-1].content
+        
+    except Exception as e:
+        task.status = TaskStatus.FAILED
+        task.error = str(e)
+    
+    # Update state
+    tasks = state["task_list"].copy()
+    tasks[idx] = task
+    return {
+        "task_list": tasks,
+        "current_task_idx": idx + 1,
+        "completed_count": state["completed_count"] + 1,
+    }
+
+def check_progress(state: AgentState):
+    """Decide what to do next based on task progress."""
+    if state["current_task_idx"] >= state["total_tasks"]:
+        return "synthesize"     # all tasks done
+    
+    # Check for failures — maybe re-plan
+    failed = [t for t in state["task_list"] if t.status == TaskStatus.FAILED]
+    if len(failed) > 2:
+        return "replan"          # too many failures, revise approach
+    
+    return "continue"            # execute next task
+```
+
+#### Mechanism 2: Persistent Task File (Deep Agent Pattern)
+
+```python
+# === File-based task tracking (survives context resets) ===
+import json
+from pathlib import Path
+
+TASK_FILE = Path("agent_workspace/task_plan.json")
+
+@tool
+def read_task_plan() -> str:
+    """Read the current task plan from disk. Call this at the start 
+    of every turn to remember what you're working on."""
+    if TASK_FILE.exists():
+        return TASK_FILE.read_text()
+    return "No task plan found. Create one with update_task_plan."
+
+@tool
+def update_task_plan(
+    tasks: list[dict],
+    current_step: int,
+    notes: str = "",
+) -> str:
+    """Update the task plan on disk. Call this after completing each step.
+    
+    Args:
+        tasks: List of {task, status, result} dicts
+        current_step: Index of the current step (0-based)
+        notes: Any observations or decisions to remember
+    """
+    plan = {
+        "tasks": tasks,
+        "current_step": current_step,
+        "notes": notes,
+        "last_updated": datetime.now().isoformat(),
+    }
+    TASK_FILE.write_text(json.dumps(plan, indent=2))
+    return f"Plan updated. {sum(1 for t in tasks if t['status'] == 'done')}/{len(tasks)} complete."
+
+# System prompt instructs the agent:
+SYSTEM = """You are a task-execution agent. ALWAYS:
+1. Start by calling read_task_plan() to see where you left off
+2. Execute the next pending task
+3. Call update_task_plan() to mark it done and record results
+4. If you encounter an error, update the plan with status 'failed' and notes
+5. Never skip steps or mark tasks done without actually completing them"""
+```
+
+#### Mechanism 3: Checkpoint-Based Recovery & Time-Travel
+
+```python
+# === LangGraph checkpointing = automatic task tracking ===
+
+# Every node execution saves a checkpoint:
+#   checkpoint_1: after planner → {task_list: [...], current: 0}
+#   checkpoint_2: after executor → {task_list: [...], current: 1, step1_result: "..."}
+#   checkpoint_3: after executor → {task_list: [...], current: 2, step2_result: "..."}
+
+# TIME-TRAVEL: Replay from any previous state
+config = {"configurable": {"thread_id": "task-123"}}
+
+# Get all checkpoints (full history)
+checkpoints = list(app.get_state_history(config))
+for cp in checkpoints:
+    print(f"Step {cp.config['checkpoint_id']}: "
+          f"Tasks done: {cp.values.get('completed_count', 0)}")
+
+# Replay from a specific checkpoint (undo last 2 steps)
+target_checkpoint = checkpoints[2]  # go back to step 2
+app.update_state(
+    target_checkpoint.config,
+    values=target_checkpoint.values,
+)
+# Now continue from step 2 — steps 3+ will be re-executed
+
+# RECOVERY after crash:
+# Agent restarts → loads latest checkpoint → continues from where it stopped
+result = app.invoke(None, config)  # None = resume from last checkpoint
+```
+
+#### Mechanism 4: Hierarchical Delegation Tracking
+
+```python
+# === Parent agent tracks sub-agent work ===
+class DelegationRecord(BaseModel):
+    sub_agent: str
+    task: str
+    status: str           # "dispatched", "completed", "failed"
+    result: str | None
+    tokens_used: int
+    duration_ms: int
+
+class CoordinatorState(MessagesState):
+    objective: str
+    delegation_log: Annotated[list[DelegationRecord], operator.add]
+    pending_delegations: list[str]
+
+def coordinator(state: CoordinatorState):
+    """Central coordinator that delegates and tracks sub-agent work."""
+    
+    # Read what's been done
+    completed = [d for d in state["delegation_log"] if d.status == "completed"]
+    failed = [d for d in state["delegation_log"] if d.status == "failed"]
+    
+    # Decide next delegation
+    if not completed and not failed:
+        # First delegation
+        return Command(goto="researcher", update={
+            "delegation_log": [DelegationRecord(
+                sub_agent="researcher",
+                task="Research the topic",
+                status="dispatched",
+                result=None,
+                tokens_used=0,
+                duration_ms=0,
+            )]
+        })
+    
+    # After sub-agent returns
+    if len(completed) == 1:
+        return Command(goto="writer", update={
+            "delegation_log": [DelegationRecord(
+                sub_agent="writer",
+                task="Write report based on research",
+                status="dispatched",
+                result=None,
+                tokens_used=0,
+                duration_ms=0,
+            )]
+        })
+    
+    return Command(goto=END)
+
+def sub_agent_wrapper(agent, agent_name: str):
+    """Wrap sub-agent to track execution and report back."""
+    def node(state, config):
+        start = time.time()
+        
+        # Execute sub-agent
+        result = agent.invoke(state)
+        
+        duration = int((time.time() - start) * 1000)
+        last_msg = result["messages"][-1].content
+        
+        # Report completion to coordinator
+        return Command(
+            goto="coordinator",
+            update={
+                "messages": result["messages"],
+                "delegation_log": [DelegationRecord(
+                    sub_agent=agent_name,
+                    task=f"Completed by {agent_name}",
+                    status="completed",
+                    result=last_msg[:200],  # truncate for tracking
+                    tokens_used=count_tokens(result),
+                    duration_ms=duration,
+                )]
+            }
+        )
+    return node
+```
+
+#### Task Tracking Patterns Comparison
+
+| Mechanism | Persistence | Survives Crash | Human Visibility | Best For |
+|-----------|------------|---------------|-----------------|----------|
+| **LangGraph State** | Per checkpoint | ✅ Yes (DB) | Via `get_state()` | Most LangGraph agents |
+| **Task File** (JSON) | On disk | ✅ Yes | Read file directly | Deep agents, long tasks |
+| **Checkpoint History** | Full history | ✅ Yes | Via `get_state_history()` | Debugging, time-travel |
+| **Delegation Log** | In state | ✅ Via checkpointer | Via state inspection | Multi-agent coordination |
+| **External DB** | Permanent | ✅ Yes | Dashboard/queries | Enterprise monitoring |
+
+📌 **TLDR:** "Agents track work through 4 mechanisms: (1) LangGraph state — task list with status enum (pending/in_progress/done/failed) updated after each step. (2) Persistent task files — JSON on disk that survives context resets; agent reads plan at start of each turn. (3) Checkpoint-based recovery — every step auto-saved; crash recovery loads last checkpoint; time-travel replays from any point. (4) Delegation tracking — coordinator logs which sub-agent did what, with status, result, tokens, and duration. The key insight: without explicit tracking, agents lose their goals after 10+ steps. Always make the plan readable by both the agent AND humans."
+
+---
+
+### 18.28 Context Windows — Strategies, Memory Optimization & Production Patterns
+
+> **📣 Interview-ready definition:** _"A context window is the total number of tokens an LLM can process in a single call — input prompt + output generation combined. GPT-4o has 128K tokens (~300 pages), Claude 3.5 has 200K. But bigger isn't better — performance degrades on long contexts ('lost in the middle' problem), cost scales linearly with token count, and latency increases with input size. Production systems manage context windows through selective pruning, summarization, RAG injection, and sliding window strategies."_
+
+#### Context Window Fundamentals
+
+```
+What counts toward the context window:
+┌──────────────────────────────────────────────────────┐
+│  CONTEXT WINDOW (e.g., 128K tokens)                   │
+│                                                        │
+│  ┌──────────────┐                                     │
+│  │ System Prompt │ ~200-2000 tokens                   │
+│  │ (persona,     │                                     │
+│  │  instructions)│                                     │
+│  └──────────────┘                                     │
+│  ┌──────────────┐                                     │
+│  │ Tools/Schemas │ ~500-5000 tokens (depends on count) │
+│  │ (JSON schemas │                                     │
+│  │  for each tool)│                                    │
+│  └──────────────┘                                     │
+│  ┌──────────────┐                                     │
+│  │ Conversation  │ Variable — grows with each turn     │
+│  │ History       │                                     │
+│  │ (messages)    │                                     │
+│  └──────────────┘                                     │
+│  ┌──────────────┐                                     │
+│  │ RAG Context   │ ~500-4000 tokens per query          │
+│  │ (retrieved    │                                     │
+│  │  documents)   │                                     │
+│  └──────────────┘                                     │
+│  ┌──────────────┐                                     │
+│  │ Output Space  │ Must reserve tokens for response    │
+│  │ (generation)  │ (typically 1K-4K)                   │
+│  └──────────────┘                                     │
+│                                                        │
+│  Total: system + tools + history + RAG + output ≤ 128K │
+└──────────────────────────────────────────────────────┘
+
+Model context window sizes (2026):
+  GPT-4o:           128K tokens (~300 pages)
+  GPT-4o-mini:      128K tokens
+  Claude 3.5 Sonnet: 200K tokens
+  Claude 3 Opus:     200K tokens
+  Gemini 1.5 Pro:   1M tokens (experimental 2M)
+  Llama 3.1:        128K tokens
+  Mistral Large:    128K tokens
+
+Token estimation rules:
+  1 token ≈ 4 characters (English)
+  1 token ≈ ¾ of a word
+  1 page of text ≈ 400-500 tokens
+  1K lines of code ≈ 3000-5000 tokens
+  100 tools with schemas ≈ 15K-25K tokens
+```
+
+#### The "Lost in the Middle" Problem
+
+```
+Research finding (Liu et al., 2023):
+  LLMs are best at using information at the BEGINNING and END of context.
+  Information in the MIDDLE of long contexts is often ignored.
+
+  ┌────────────────────────────────────────────────┐
+  │                                                  │
+  │  Recall   ████████                               │
+  │  Quality  ████████                               │
+  │           ████████                               │
+  │           ████████████                           │
+  │           ████████████                           │
+  │           ████████████                           │
+  │           ████████████████                       │
+  │           ████████████████████                   │
+  │           ████████████████████████               │
+  │           ████████████████████████████████       │
+  │           ████████████████████████████████████   │
+  │           ▲         ▲              ▲             │
+  │         START     MIDDLE          END            │
+  │       (high)     (LOW!)         (high)           │
+  └────────────────────────────────────────────────┘
+
+Implications for agents:
+  1. Put critical instructions in system prompt (start) — not middle of history
+  2. Put RAG context CLOSE to the user question (end) — not at the start
+  3. For long conversations, summarize middle turns — keep recent + system prompt
+  4. Don't blindly stuff the context — more tokens ≠ better performance
+```
+
+#### Strategy 1: Sliding Window with Summarization
+
+```python
+# === Keep recent messages + summarize old ones ===
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+def manage_context_window(
+    messages: list,
+    max_tokens: int = 16_000,
+    keep_recent: int = 10,     # keep last N messages verbatim
+    system_prompt: str = "",
+) -> list:
+    """Compress conversation history to fit context window."""
+    
+    total_tokens = count_tokens(messages)
+    if total_tokens <= max_tokens:
+        return messages  # fits, no compression needed
+    
+    # Split: system + old messages + recent messages
+    system = [m for m in messages if isinstance(m, SystemMessage)]
+    non_system = [m for m in messages if not isinstance(m, SystemMessage)]
+    
+    recent = non_system[-keep_recent:]     # keep recent verbatim
+    old = non_system[:-keep_recent]        # summarize old
+    
+    if not old:
+        return messages  # nothing to summarize
+    
+    # Summarize old messages into one compact message
+    old_text = "\n".join(f"{m.type}: {m.content[:200]}" for m in old)
+    summary = llm.invoke(
+        f"Summarize this conversation history in 2-3 sentences. "
+        f"Preserve key facts, decisions, and action items:\n{old_text}"
+    )
+    
+    summary_msg = SystemMessage(
+        content=f"[CONVERSATION SUMMARY]\n{summary.content}"
+    )
+    
+    return system + [summary_msg] + recent
+
+# Usage in a LangGraph node:
+def agent_node(state: MessagesState):
+    managed = manage_context_window(state["messages"], max_tokens=16_000)
+    response = llm.invoke(managed)
+    return {"messages": [response]}
+```
+
+#### Strategy 2: Token-Aware Message Pruning
+
+```python
+# === Selectively prune messages by importance ===
+def prune_by_importance(
+    messages: list,
+    max_tokens: int,
+    always_keep: set[str] = {"system", "human"},  # never prune these types
+) -> list:
+    """Remove least important messages to fit budget."""
+    
+    # Priority: system > human > tool results > AI responses
+    priority = {"system": 0, "human": 1, "tool": 3, "ai": 2}
+    
+    # Always keep system messages and all human messages
+    keep = [m for m in messages if m.type in always_keep]
+    candidates = [m for m in messages if m.type not in always_keep]
+    
+    # Sort by: (recency DESC, priority ASC) — keep recent + important
+    candidates.sort(
+        key=lambda m: (
+            -messages.index(m),            # recent first
+            priority.get(m.type, 99),       # high priority first
+        )
+    )
+    
+    # Add candidates until budget is reached
+    current_tokens = count_tokens(keep)
+    for msg in candidates:
+        msg_tokens = count_tokens([msg])
+        if current_tokens + msg_tokens <= max_tokens:
+            keep.append(msg)
+            current_tokens += msg_tokens
+    
+    # Restore original order
+    keep.sort(key=lambda m: messages.index(m))
+    return keep
+```
+
+#### Strategy 3: Trim Tool Results (Biggest Token Saver)
+
+```python
+# === Tool results are the #1 cause of context bloat ===
+
+# Problem: A web search returns 5000 tokens of raw HTML.
+#          Agent only needs 200 tokens of relevant content.
+
+# Solution 1: Truncate tool results
+def truncate_tool_result(result: str, max_chars: int = 2000) -> str:
+    """Hard truncate with ellipsis."""
+    if len(result) <= max_chars:
+        return result
+    return result[:max_chars] + "\n...[truncated]"
+
+# Solution 2: Summarize tool results
+def summarize_tool_result(result: str, query: str) -> str:
+    """LLM summarization of tool output (costly but effective)."""
+    if count_tokens(result) < 500:
+        return result  # short enough
+    
+    summary = llm.invoke(
+        f"Extract ONLY the information relevant to this query:\n"
+        f"Query: {query}\n"
+        f"Tool output:\n{result[:5000]}\n"
+        f"Respond with a concise summary (max 200 words)."
+    )
+    return summary.content
+
+# Solution 3: Structured tool outputs (best approach)
+@tool
+def search_database(query: str) -> str:
+    """Search the database. Returns structured JSON, not raw data."""
+    results = db.search(query, limit=5)
+    # Return only essential fields — not the entire row
+    return json.dumps([
+        {"id": r.id, "title": r.title, "relevance": r.score}
+        for r in results
+    ])
+```
+
+#### Strategy 4: RAG Context Window Optimization
+
+```python
+# === Optimize what goes into the context from RAG ===
+
+def build_rag_context(
+    query: str,
+    retriever,
+    max_context_tokens: int = 3000,
+    strategy: str = "truncate",  # "truncate" | "best_chunks" | "map_reduce"
+) -> str:
+    """Build an optimally-sized RAG context."""
+    
+    docs = retriever.invoke(query)  # retrieve top-K documents
+    
+    if strategy == "truncate":
+        # Simple: concatenate and truncate
+        context = "\n\n---\n\n".join(d.page_content for d in docs)
+        return context[:max_context_tokens * 4]  # rough char→token
+    
+    elif strategy == "best_chunks":
+        # Greedy: add chunks one-by-one until budget is reached
+        context_parts = []
+        token_count = 0
+        for doc in docs:
+            doc_tokens = count_tokens(doc.page_content)
+            if token_count + doc_tokens > max_context_tokens:
+                break
+            context_parts.append(doc.page_content)
+            token_count += doc_tokens
+        return "\n\n---\n\n".join(context_parts)
+    
+    elif strategy == "map_reduce":
+        # Summarize each chunk, then combine summaries
+        summaries = []
+        for doc in docs:
+            summary = llm.invoke(
+                f"Summarize this document chunk in 2-3 sentences, "
+                f"focusing on information relevant to: {query}\n\n"
+                f"{doc.page_content}"
+            )
+            summaries.append(summary.content)
+        return "\n\n".join(summaries)
+```
+
+#### Strategy 5: Dynamic Context Assembly (Production Pattern)
+
+```python
+# === Assemble the optimal context for each request ===
+class ContextBudget:
+    """Manages token allocation across context components."""
+    
+    def __init__(self, model_limit: int = 128_000, reserve_output: int = 4_000):
+        self.total = model_limit - reserve_output
+        self.allocated = {}
+    
+    def allocate(self, component: str, tokens: int) -> int:
+        """Allocate tokens to a component. Returns actual allocation."""
+        remaining = self.total - sum(self.allocated.values())
+        actual = min(tokens, remaining)
+        self.allocated[component] = actual
+        return actual
+    
+    def remaining(self) -> int:
+        return self.total - sum(self.allocated.values())
+
+def build_agent_context(
+    state: MessagesState,
+    system_prompt: str,
+    tools: list,
+    rag_context: str | None = None,
+) -> list:
+    """Dynamically assemble context within token budget."""
+    
+    budget = ContextBudget(model_limit=128_000, reserve_output=4_000)
+    messages = []
+    
+    # 1. System prompt (highest priority — always include)
+    sys_tokens = count_tokens(system_prompt)
+    budget.allocate("system", sys_tokens)
+    messages.append(SystemMessage(content=system_prompt))
+    
+    # 2. Tool schemas (high priority — needed for tool calling)
+    tool_tokens = count_tokens(json.dumps([t.schema for t in tools]))
+    budget.allocate("tools", tool_tokens)
+    # (tools are passed separately, not as messages)
+    
+    # 3. RAG context (if available — inject before recent messages)
+    if rag_context:
+        rag_budget = min(budget.remaining() // 3, 4_000)  # max 1/3 of remaining
+        budget.allocate("rag", rag_budget)
+        trimmed_rag = rag_context[:rag_budget * 4]  # rough trim
+        messages.append(SystemMessage(
+            content=f"[RELEVANT CONTEXT]\n{trimmed_rag}"
+        ))
+    
+    # 4. Conversation history (fill remaining budget)
+    history_budget = budget.remaining()
+    history = manage_context_window(
+        state["messages"],
+        max_tokens=history_budget,
+        keep_recent=10,
+    )
+    messages.extend(history)
+    
+    return messages
+
+# Typical allocation for a 128K context agent:
+# System prompt:     1K tokens (1%)
+# Tool schemas:      5K tokens (4%)
+# RAG context:       4K tokens (3%)
+# Conversation:     110K tokens (89%) — but rarely this large
+# Reserved output:    4K tokens (3%)
+```
+
+#### Memory Optimization Techniques
+
+**Technique 1: KV Cache Management**
+
+```
+What: During generation, the LLM stores Key and Value matrices from 
+      attention for all previous tokens. This is the KV cache.
+
+Cost: KV cache size = 2 × num_layers × d_model × seq_length × batch_size
+      For Llama 70B at 4K context: ~5.6 GB of GPU memory
+      For Llama 70B at 128K context: ~180 GB (!) — exceeds most GPUs
+
+Optimization techniques:
+
+1. PAGED ATTENTION (vLLM)
+   Treat KV cache like virtual memory pages
+   Allocate/free pages dynamically for variable-length sequences
+   Reduces waste by 60-80% vs static allocation
+   → Enables 2-4x more concurrent users per GPU
+
+2. MULTI-QUERY ATTENTION (MQA) / GROUPED-QUERY ATTENTION (GQA)
+   Standard: each attention head has its own K, V matrices
+   MQA: ALL heads share ONE K, V matrix → cache is 1/H size
+   GQA: heads grouped, each GROUP shares K, V → cache is 1/G size
+   Llama 3 uses GQA (8 KV groups for 32 heads = 4x cache reduction)
+
+3. SLIDING WINDOW ATTENTION (Mistral)
+   Only attend to the last W tokens (e.g., W=4096)
+   KV cache stays fixed size regardless of sequence length
+   Long-range info propagates through layers (like CNN receptive fields)
+
+4. QUANTIZED KV CACHE
+   Store cache in INT8/FP8 instead of FP16
+   2x memory reduction with minimal quality loss
+   Supported in vLLM, TensorRT-LLM
+```
+
+**Technique 2: Prompt Caching (Anthropic / OpenAI)**
+
+```python
+# === Prompt caching — reuse expensive system prompt computation ===
+
+# Problem: Your system prompt is 5K tokens and identical across all requests.
+#          Without caching: 5K tokens re-processed every single call.
+#          With caching: 5K tokens processed ONCE, reused for subsequent calls.
+
+# OpenAI: Automatic prompt caching (enabled by default since 2024)
+# → First request: full price for system prompt
+# → Subsequent requests with SAME prefix: 50% discount on cached portion
+
+# Anthropic: Explicit cache control
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    system=[
+        {
+            "type": "text",
+            "text": very_long_system_prompt,    # 5K tokens
+            "cache_control": {"type": "ephemeral"},  # ← cache this!
+        }
+    ],
+    messages=[{"role": "user", "content": user_query}],
+)
+
+# Savings:
+# Without caching: 5K input tokens × $3/M = $0.015 per request
+# With caching:    5K cached tokens × $0.30/M = $0.0015 per request (90% savings)
+# Cache TTL: 5 minutes (Anthropic), longer with sustained traffic
+
+# What to cache (most effective):
+# 1. Long system prompts (persona, rules, few-shot examples)
+# 2. RAG context that's shared across a conversation
+# 3. Tool schemas (if many tools)
+# 4. Conversation history prefix (multi-turn)
+```
+
+**Technique 3: Context Compression Algorithms**
+
+```python
+# === LLMLingua — compress prompts while preserving meaning ===
+# Research: Microsoft's LLMLingua uses a small LM to identify 
+# which tokens can be removed without changing the LLM's output.
+
+# Compression rates: 2x-10x reduction with <5% quality loss
+# Best for: Long RAG contexts, verbose tool outputs
+
+# Example conceptual flow:
+# Original (800 tokens):
+#   "The quarterly financial report for Q3 2026 shows that the company's
+#    total revenue increased by 15% year-over-year to $2.3 billion. The
+#    growth was primarily driven by the cloud computing division, which
+#    saw a 28% increase in revenue. Operating expenses remained flat at
+#    $1.5 billion, resulting in an operating margin improvement of 3
+#    percentage points to 35%."
+#
+# Compressed (300 tokens):
+#   "Q3 2026: revenue $2.3B (+15% YoY). Cloud division +28%.
+#    OpEx $1.5B (flat). Operating margin 35% (+3pp)."
+#
+# The LLM produces the same answer with both — but compressed uses 62% fewer tokens.
+
+# === Alternative: Extractive compression ===
+def compress_context(context: str, query: str, target_ratio: float = 0.3) -> str:
+    """Keep only sentences most relevant to the query."""
+    sentences = context.split(". ")
+    
+    # Score each sentence by relevance to query
+    query_embedding = embed(query)
+    scored = []
+    for sent in sentences:
+        sent_embedding = embed(sent)
+        score = cosine_similarity(query_embedding, sent_embedding)
+        scored.append((score, sent))
+    
+    # Keep top sentences until target token ratio
+    scored.sort(reverse=True)
+    target_tokens = count_tokens(context) * target_ratio
+    
+    kept = []
+    current_tokens = 0
+    for score, sent in scored:
+        sent_tokens = count_tokens(sent)
+        if current_tokens + sent_tokens > target_tokens:
+            break
+        kept.append(sent)
+        current_tokens += sent_tokens
+    
+    # Restore original order
+    kept.sort(key=lambda s: context.index(s))
+    return ". ".join(kept)
+```
+
+**Technique 4: Hierarchical Context (Multi-Resolution)**
+
+```
+Instead of one flat context, maintain multiple levels of detail:
+
+Level 0 (most detailed): Last 5 messages — verbatim
+Level 1 (summarized):    Messages 6-20 — paragraph summary
+Level 2 (compressed):    Messages 21+ — one-line bullet points
+Level 3 (archived):      Older messages — stored in vector DB, retrieved on demand
+
+┌──────────────────────────────────────────────┐
+│ [System Prompt]                               │
+│                                                │
+│ [Level 3: Archived Facts]                      │
+│   • User prefers Python over Java              │
+│   • Working on a payment system project        │
+│                                                │
+│ [Level 2: Compressed History]                  │
+│   Turns 1-10: Discussed architecture options.  │
+│   Decided on microservices with Kafka.         │
+│                                                │
+│ [Level 1: Recent Summary]                      │
+│   Turns 11-15: Implemented the payment service │
+│   with Stripe integration. Fixed a bug in the  │
+│   webhook handler.                             │
+│                                                │
+│ [Level 0: Verbatim Recent]                     │
+│   User: "Can you add retry logic to webhooks?" │
+│   AI: "Sure, here's the implementation..."     │
+│   User: "Make it exponential backoff"          │
+│   AI: [current response being generated]       │
+└──────────────────────────────────────────────┘
+```
+
+```python
+# === Hierarchical context manager ===
+class HierarchicalContextManager:
+    def __init__(self, llm, store, max_tokens: int = 16_000):
+        self.llm = llm
+        self.store = store  # LangGraph Store or vector DB
+        self.max_tokens = max_tokens
+    
+    def build_context(
+        self,
+        messages: list,
+        user_id: str,
+    ) -> list:
+        """Build multi-resolution context."""
+        result = []
+        budget = self.max_tokens
+        
+        # Level 0: Verbatim recent (highest priority)
+        recent = messages[-6:]  # last 3 exchanges
+        recent_tokens = count_tokens(recent)
+        budget -= recent_tokens
+        
+        # Level 3: Archived facts from persistent memory
+        memories = self.store.search(
+            ("user", user_id),
+            query=messages[-1].content,  # search relevant to current query
+            limit=5,
+        )
+        if memories:
+            facts = "\n".join(f"• {m.value['fact']}" for m in memories)
+            facts_msg = SystemMessage(content=f"[USER FACTS]\n{facts}")
+            facts_tokens = count_tokens(facts)
+            budget -= facts_tokens
+            result.append(facts_msg)
+        
+        # Level 2 & 1: Summarize older messages to fit remaining budget
+        old_messages = messages[:-6]
+        if old_messages and budget > 500:
+            # Split into two halves: compress and summarize
+            midpoint = len(old_messages) // 2
+            
+            # Level 2: Heavily compressed (oldest)
+            if midpoint > 0:
+                oldest_text = "\n".join(
+                    f"{m.type}: {m.content[:100]}" for m in old_messages[:midpoint]
+                )
+                bullets = self.llm.invoke(
+                    f"Compress to bullet points (max 3):\n{oldest_text}"
+                )
+                result.append(SystemMessage(
+                    content=f"[EARLIER CONTEXT]\n{bullets.content}"
+                ))
+            
+            # Level 1: Moderate summary (middle)
+            middle = old_messages[midpoint:]
+            if middle:
+                middle_text = "\n".join(
+                    f"{m.type}: {m.content[:200]}" for m in middle
+                )
+                summary = self.llm.invoke(
+                    f"Summarize in 2-3 sentences:\n{middle_text}"
+                )
+                result.append(SystemMessage(
+                    content=f"[RECENT CONTEXT]\n{summary.content}"
+                ))
+        
+        # Level 0: Verbatim recent
+        result.extend(recent)
+        return result
+```
+
+#### Context Window Interview Q&A
+
+> **Q: "What is the context window and why does size matter?"**
+> A: The context window is the total tokens (input + output) an LLM processes in one call. Larger windows (128K+) allow more conversation history and RAG context, but come with tradeoffs: (1) cost scales linearly, (2) latency increases, (3) the "lost in the middle" problem means the LLM ignores information in the middle of long contexts. In practice, a well-managed 16K context often outperforms a carelessly stuffed 128K context.
+
+> **Q: "How do you handle conversations that exceed the context window?"**
+> A: Four strategies, in order of sophistication: (1) Sliding window — keep last N messages, drop oldest. Simple but loses long-term context. (2) Summarization — compress old messages into a summary, keep recent verbatim. Good balance. (3) Hierarchical — multi-resolution context (verbatim recent, summarized middle, bullet-point oldest, vector-retrieved archived facts). Best quality. (4) RAG-augmented memory — store all messages in a vector DB, retrieve only relevant past turns for each new query. Most scalable.
+
+> **Q: "What is the 'lost in the middle' problem and how do you mitigate it?"**
+> A: Research shows LLMs recall information best from the start and end of context, but poorly from the middle. Mitigation: (1) put critical instructions in the system prompt (start), (2) put RAG context immediately before the user's question (end), (3) summarize middle sections of long conversations, (4) for RAG, re-rank and put the most relevant chunk first.
+
+> **Q: "How does prompt caching work and when would you use it?"**
+> A: Prompt caching avoids re-processing identical prefixes across requests. Anthropic offers explicit cache control (`cache_control: ephemeral`), OpenAI does it automatically. Use it when: (1) system prompt is >1K tokens and identical across calls, (2) RAG context is shared within a conversation, (3) you have many tools (schemas are expensive). Savings: up to 90% cost reduction on the cached prefix, plus lower latency (cached tokens don't need recomputation).
+
+> **Q: "How do you manage context for an agent with many tools?"**
+> A: 100 tools with JSON schemas ≈ 15-25K tokens — consuming a huge chunk of the context. Solutions: (1) Dynamic tool selection — retrieve relevant tools per query instead of injecting all tools. (2) Tool groups — load tools based on task category (e.g., research tools vs coding tools). (3) Smaller schemas — write concise tool descriptions. (4) Two-stage: first call with tool selection only (pick 3-5 relevant tools), second call with those tools loaded. LangGraph's dynamic tool discovery (DeepAgent pattern) scales to 16K+ tools.
+
+> **Q: "What is KV cache and why does it matter for inference?"**
+> A: During autoregressive generation, the LLM caches Key and Value attention matrices for all processed tokens. Without it, generating token 1000 would re-process tokens 1-999 (quadratic cost). With it, only the new token is processed (linear). The tradeoff: KV cache consumes GPU memory proportional to sequence length × model size. For Llama 70B at 128K context, that's ~180GB — more than most GPUs. Optimizations: PagedAttention (vLLM), Grouped-Query Attention (Llama 3), sliding window attention (Mistral), quantized cache (INT8).
+
+📌 **TLDR:** "Context window = total tokens the LLM sees per call. Cost, latency, and quality scale with it. 'Lost in the middle' = LLMs ignore middle content in long contexts — put critical info at start and end. Management strategies: (1) sliding window (simple), (2) summarization (balanced), (3) hierarchical multi-resolution (best quality), (4) RAG-augmented memory (most scalable). Trim tool results (biggest token saver). Use prompt caching for 90% savings on repeated prefixes. KV cache management (PagedAttention, GQA) is critical for inference performance. Dynamic tool loading for agents with many tools. The production insight: a well-managed 16K context beats a carelessly stuffed 128K context."
+
 ## 19. Message Brokers & Search Engines — Kafka, RabbitMQ, Elasticsearch
 
 > **📣 Interview-ready definition:** _"Message brokers decouple services by enabling asynchronous, reliable communication. Kafka is a distributed event-streaming platform (append-only log, pull-based, massive throughput); RabbitMQ is a traditional message broker (push-based, smart routing, lower latency). Elasticsearch is a distributed search and analytics engine built on Apache Lucene's inverted index. All three are infrastructure cornerstones that tech leads must understand at an architectural level."_
@@ -18217,6 +19596,9 @@ def process_webhook(self, webhook_id, payload):
 | "How do you test/evaluate AI agents?"                                  | Golden datasets + trajectory eval (tool sequence), LangSmith evaluators, LLM-as-a-judge, task success rate, regression testing across versions.                              |
 | "How do you handle agent handoffs?"                                    | Swarm pattern: agent calls handoff tool → `Command(goto="other_agent")`. Supervisor: central router with `conditional_edges`. Hierarchical: subgraphs as nodes.              |
 | "How do you build compliance-aware AI?"                                | Audit every LLM call (append-only), scrub PII from memory, use SQL tools for financial numbers (never hallucinate), validate numbers post-generation.                        |
+| "Which agentic pattern would you use for X?"                           | ReAct (simple tools), Plan-and-Execute (complex tasks), Reflection (self-improvement), Self-Ask (multi-hop), LATS (high-stakes), LLM Compiler (parallel). Match to needs.    |
+| "How do agents track what they've done?"                               | LangGraph state with task status enum, persistent task files (JSON), checkpoint history (time-travel), delegation logs for sub-agents.                                        |
+| "How do you manage context window efficiently?"                        | Sliding window + summarization, token-aware pruning, tool result trimming, hierarchical context (multi-resolution), prompt caching, dynamic context assembly with budgets.    |
 
 ---
 
