@@ -20990,21 +20990,69 @@ AWS Global Infrastructure:
 | **Policy** | JSON document defining Allow/Deny rules | `AmazonS3ReadOnlyAccess` |
 | **STS** | Security Token Service — temporary credentials | Cross-account access, federation |
 
-**⚠️ Never Do This:** Hard-code AWS access keys in source code. Use IAM Roles for services, environment variables for local dev, and AWS SSO for human access.
+**IAM best practices (interview gold):**
 
-**VPC (Virtual Private Cloud):**
+```bash
+# 1. NEVER hard-code access keys — use IAM Roles for services
+aws iam create-role --role-name api-server-role \
+  --assume-role-policy-document file://trust-policy.json
+
+# Attach policy to role
+aws iam attach-role-policy --role-name api-server-role \
+  --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+# Attach role to EC2 instance (instance gets temp credentials automatically)
+aws ec2 associate-iam-instance-profile \
+  --instance-id i-1234567890abcdef0 \
+  --iam-instance-profile Name=api-server-profile
+
+# 2. Cross-account access — assume role in another account
+aws sts assume-role \
+  --role-arn arn:aws:iam::123456789012:role/CrossAccountRole \
+  --role-session-name my-session
+
+# 3. Service Control Policies (SCPs) — org-level guardrails
+# Applied at AWS Organization level — restrict ENTIRE accounts
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Deny",
+            "Action": ["ec2:RunInstances"],
+            "Resource": "*",
+            "Condition": {
+                "StringNotEquals": {"ec2:Region": ["ap-south-1", "us-east-1"]}
+            }
+        }
+    ]
+}
+# → Nobody in this account can launch EC2 outside Mumbai/Virginia
+
+# 4. AWS SSO (IAM Identity Center) — centralized human access
+# → Federate with Okta/Azure AD
+# → Users get temporary credentials via SSO portal
+# → No more IAM Users with long-lived access keys!
+```
+
+⚠️ **Never Do This:** Hard-code AWS access keys in source code. Use IAM Roles for services, environment variables for local dev, and AWS SSO for human access.
+
+**VPC (Virtual Private Cloud) — deep dive:**
 
 ```
 ┌──────────────────── VPC: 10.0.0.0/16 ─────────────────────┐
 │                                                              │
-│  ┌─── Public Subnet: 10.0.1.0/24 ─────────────────────┐   │
-│  │  EC2 (web server)  ←→  Internet Gateway (IGW)       │   │
-│  │  NAT Gateway                                         │   │
+│  ┌─── Public Subnet: 10.0.1.0/24 (AZ-1a) ──────────────┐  │
+│  │  EC2 (web server)  ←→  Internet Gateway (IGW)         │  │
+│  │  NAT Gateway  (for private subnet outbound)           │  │
 │  └──────────────────────────────────────────────────────┘   │
 │                          ↓ NAT                               │
-│  ┌─── Private Subnet: 10.0.2.0/24 ────────────────────┐   │
-│  │  EC2 (app server)  RDS (database)  Lambda           │   │
-│  │  ← No direct internet access, outbound via NAT →    │   │
+│  ┌─── Private Subnet: 10.0.2.0/24 (AZ-1a) ─────────────┐  │
+│  │  EC2 (app server)  RDS (database)  Lambda             │  │
+│  │  ← No direct internet access, outbound via NAT →      │  │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌─── Private Subnet: 10.0.3.0/24 (AZ-1b) ─────────────┐  │
+│  │  EC2 (app server)  RDS Standby (Multi-AZ)             │  │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 │  Security Group (SG) = instance-level firewall (stateful)    │
@@ -21012,16 +21060,172 @@ AWS Global Infrastructure:
 └──────────────────────────────────────────────────────────────┘
 ```
 
+```bash
+# === VPC creation with CLI ===
+
+# 1. Create VPC
+aws ec2 create-vpc --cidr-block 10.0.0.0/16 \
+  --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=prod-vpc}]'
+
+# 2. Create subnets in different AZs
+aws ec2 create-subnet --vpc-id vpc-xxx \
+  --cidr-block 10.0.1.0/24 --availability-zone ap-south-1a \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=public-1a}]'
+
+aws ec2 create-subnet --vpc-id vpc-xxx \
+  --cidr-block 10.0.2.0/24 --availability-zone ap-south-1a \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=private-1a}]'
+
+aws ec2 create-subnet --vpc-id vpc-xxx \
+  --cidr-block 10.0.3.0/24 --availability-zone ap-south-1b \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=private-1b}]'
+
+# 3. Internet Gateway (for public subnets)
+aws ec2 create-internet-gateway
+aws ec2 attach-internet-gateway --internet-gateway-id igw-xxx --vpc-id vpc-xxx
+
+# 4. Route table for public subnet
+aws ec2 create-route-table --vpc-id vpc-xxx
+aws ec2 create-route --route-table-id rtb-xxx \
+  --destination-cidr-block 0.0.0.0/0 --gateway-id igw-xxx   # route to internet
+aws ec2 associate-route-table --route-table-id rtb-xxx --subnet-id subnet-public
+
+# 5. NAT Gateway (for private subnets to reach internet)
+aws ec2 allocate-address                                      # Elastic IP
+aws ec2 create-nat-gateway --subnet-id subnet-public \
+  --allocation-id eipalloc-xxx                                # NAT in public subnet!
+
+# Private subnet route table → NAT
+aws ec2 create-route --route-table-id rtb-private \
+  --destination-cidr-block 0.0.0.0/0 --nat-gateway-id nat-xxx
+```
+
+**Security Groups vs NACLs — the key difference:**
+
+```bash
+# Security Group (instance-level, STATEFUL)
+#   ✅ Allow rules only (no explicit deny)
+#   ✅ Stateful: if you allow inbound, outbound response is auto-allowed
+#   ✅ Can reference other SGs (not just CIDR blocks)
+
+aws ec2 create-security-group --group-name web-sg \
+  --description "Web server SG" --vpc-id vpc-xxx
+
+# Allow HTTP/HTTPS from anywhere
+aws ec2 authorize-security-group-ingress --group-id sg-xxx \
+  --protocol tcp --port 80 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id sg-xxx \
+  --protocol tcp --port 443 --cidr 0.0.0.0/0
+
+# Allow app-sg to access DB on port 5432 (SG-to-SG reference!)
+aws ec2 authorize-security-group-ingress --group-id sg-db \
+  --protocol tcp --port 5432 --source-group sg-app
+# → Only instances in sg-app can reach the database
+
+# NACL (subnet-level, STATELESS)
+#   ✅ Allow AND Deny rules (can block specific IPs!)
+#   ❌ Stateless: must explicitly allow both inbound AND outbound
+#   ✅ Rules evaluated by number (lowest first)
+
+aws ec2 create-network-acl --vpc-id vpc-xxx
+
+# Block a known bad IP range (can't do this with Security Groups!)
+aws ec2 create-network-acl-entry --network-acl-id acl-xxx \
+  --rule-number 50 --protocol -1 --rule-action deny \
+  --cidr-block 198.51.100.0/24 --ingress
+
+# Allow all other traffic
+aws ec2 create-network-acl-entry --network-acl-id acl-xxx \
+  --rule-number 100 --protocol -1 --rule-action allow \
+  --cidr-block 0.0.0.0/0 --ingress
+```
+
+**VPC Peering & Transit Gateway — connecting networks:**
+
+```
+VPC Peering (1:1 connection, non-transitive):
+  VPC-A ↔ VPC-B ↔ VPC-C
+  But VPC-A CANNOT reach VPC-C through VPC-B!
+  
+  aws ec2 create-vpc-peering-connection \
+    --vpc-id vpc-a --peer-vpc-id vpc-b --peer-region us-east-1
+  
+  # Must update route tables on BOTH sides!
+
+Transit Gateway (hub-and-spoke, transitive — for many VPCs):
+  ┌─────┐
+  │VPC-A│──┐
+  └─────┘  │    ┌──────────────┐    ┌─────┐
+  ┌─────┐  ├───→│Transit Gateway│←──→│On-prem│
+  │VPC-B│──┤    └──────────────┘    └─────┘
+  └─────┘  │         ↕
+  ┌─────┐  │    ┌─────┐
+  │VPC-C│──┘    │VPC-D│
+  └─────┘       └─────┘
+  
+  → All VPCs can talk to each other through TGW (transitive!)
+  → On-prem connects via VPN or Direct Connect
+  → Supports 5,000+ VPCs per TGW
+  → $0.05/hour + $0.02/GB data processing
+```
+
+**VPC Endpoints — access AWS services without internet:**
+
+```bash
+# Gateway Endpoint (FREE — S3 and DynamoDB only)
+aws ec2 create-vpc-endpoint --vpc-id vpc-xxx \
+  --service-name com.amazonaws.ap-south-1.s3 \
+  --route-table-ids rtb-private
+# → Private subnet can reach S3 without NAT Gateway (saves $$!)
+
+# Interface Endpoint (for all other AWS services — costs $0.01/hr)
+aws ec2 create-vpc-endpoint --vpc-id vpc-xxx \
+  --service-name com.amazonaws.ap-south-1.sqs \
+  --vpc-endpoint-type Interface \
+  --subnet-ids subnet-private-1a \
+  --security-group-ids sg-endpoint
+# → Private subnet can reach SQS via private IP (no internet!)
+
+# AWS PrivateLink (expose YOUR service to other VPCs privately)
+# → Service provider creates NLB + VPC Endpoint Service
+# → Service consumer creates Interface Endpoint
+# → Traffic stays on AWS backbone, never touches internet
+```
+
+**VPC Flow Logs — network monitoring:**
+
+```bash
+# Enable flow logs on VPC (all traffic)
+aws ec2 create-flow-log \
+  --resource-type VPC --resource-id vpc-xxx \
+  --traffic-type ALL \
+  --log-destination-type cloud-watch-logs \
+  --log-group-name vpc-flow-logs \
+  --deliver-logs-permission-arn arn:aws:iam::xxx:role/flowlog-role
+
+# Flow log format:
+# srcaddr dstaddr srcport dstport protocol action
+# 10.0.1.5 10.0.2.10 443 49152 6 ACCEPT
+# 198.51.100.5 10.0.1.5 22 22 6 REJECT    ← blocked SSH attempt!
+
+# Use for: security auditing, troubleshooting, cost optimization
+# Export to S3 → query with Athena for analysis
+```
+
 | Component | Purpose | Key Detail |
 |-----------|---------|------------|
 | **VPC** | Your private network in AWS | One per region, CIDR block (e.g., 10.0.0.0/16) |
 | **Subnet** | Subdivision of VPC | Public (has route to IGW) or Private (no IGW route) |
 | **Internet Gateway** | Connects VPC to internet | Attach to VPC, route 0.0.0.0/0 → IGW |
-| **NAT Gateway** | Lets private subnets reach internet | Outbound only — private instances can download packages |
-| **Security Group** | Instance-level firewall | **Stateful** — allow inbound, response auto-allowed |
-| **NACL** | Subnet-level firewall | **Stateless** — must explicitly allow both directions |
+| **NAT Gateway** | Lets private subnets reach internet | Outbound only, per-AZ ($0.045/hr + data) |
+| **Security Group** | Instance-level firewall | **Stateful**, allow-only, reference other SGs |
+| **NACL** | Subnet-level firewall | **Stateless**, allow + deny, numbered rules |
+| **VPC Peering** | 1:1 VPC connection | Non-transitive, cross-region, cross-account |
+| **Transit Gateway** | Hub for many VPCs + on-prem | Transitive routing, 5000+ VPCs |
+| **VPC Endpoints** | Access AWS services privately | Gateway (S3/DDB, free) or Interface ($) |
+| **VPC Flow Logs** | Network traffic logging | Security, troubleshooting, compliance |
 
-📌 **TLDR:** "AWS = Regions (geo) → AZs (data centers) → VPCs (your network) → Subnets (public/private). IAM controls WHO can do WHAT on WHICH resource. Security Groups are stateful firewalls on instances; NACLs are stateless on subnets. Always use IAM Roles, never hard-code keys."
+📌 **TLDR:** "AWS = Regions (geo) → AZs (data centers) → VPCs (your network) → Subnets (public/private). IAM controls WHO can do WHAT on WHICH resource. Security Groups are stateful firewalls on instances; NACLs are stateless on subnets. Use Transit Gateway for multi-VPC. VPC Endpoints save NAT costs for S3/DynamoDB. Always use IAM Roles, never hard-code keys."
 
 ---
 
@@ -21043,7 +21247,12 @@ Families worth knowing:
   c5/c6i  — compute-optimized (batch processing, ML inference)
   r5/r6i  — memory-optimized (in-memory caches, large DB)
   p4/g5   — GPU instances (ML training, video processing)
-  i3      — storage-optimized (databases, data warehouses)
+  i3/i4i  — storage-optimized (databases, data warehouses)
+  
+Graviton (ARM) — 'g' suffix (m6g, c6g, r6g):
+  → 40% better price-performance than x86 equivalents
+  → Use for: web servers, containers, microservices
+  → Python, Node.js, Java all work natively on ARM
 ```
 
 **Purchasing options:**
@@ -21053,9 +21262,140 @@ Families worth knowing:
 | **On-Demand** | 0% (full price) | None | Dev/test, unpredictable workloads |
 | **Reserved** | Up to 72% | 1 or 3 year | Steady-state production servers |
 | **Spot** | Up to 90% | None (can be interrupted) | Batch processing, CI/CD runners, fault-tolerant workloads |
-| **Savings Plan** | Up to 72% | $/hour commitment | Flexible across instance types |
+| **Savings Plan** | Up to 72% | $/hour commitment | Flexible across instance types & regions |
+| **Dedicated Host** | Varies | On-demand or reserved | Licensing compliance (Oracle, Windows), regulatory |
 
-**Auto Scaling Group (ASG) + Elastic Load Balancer (ELB):**
+**Launch & manage instances (CLI):**
+
+```bash
+# Launch an instance
+aws ec2 run-instances \
+  --image-id ami-0c55b159cbfafe1f0 \       # Amazon Linux 2
+  --instance-type m6i.xlarge \
+  --key-name my-key \
+  --security-group-ids sg-xxx \
+  --subnet-id subnet-private \
+  --iam-instance-profile Name=api-role \    # IAM role (not access keys!)
+  --user-data file://startup.sh \           # runs on first boot
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":100,"VolumeType":"gp3","Encrypted":true}}]' \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=api-server},{Key=Env,Value=prod}]'
+
+# User data script (like GCP startup-script)
+cat > startup.sh << 'EOF'
+#!/bin/bash
+yum update -y
+yum install -y docker
+systemctl start docker
+aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 123456.dkr.ecr.ap-south-1.amazonaws.com
+docker pull 123456.dkr.ecr.ap-south-1.amazonaws.com/api:latest
+docker run -d -p 8000:8000 123456.dkr.ecr.ap-south-1.amazonaws.com/api:latest
+EOF
+
+# Create custom AMI (snapshot entire instance for fast cloning)
+aws ec2 create-image --instance-id i-xxx \
+  --name "api-server-v1.2-$(date +%Y%m%d)" \
+  --no-reboot                               # no downtime!
+```
+
+**EBS — Elastic Block Store (persistent disks):**
+
+| Volume Type | IOPS | Throughput | Use Case |
+|------------|------|-----------|----------|
+| **gp3** (general SSD) | 3,000–16,000 | 125–1,000 MB/s | Boot volumes, general workloads |
+| **gp2** (prev gen SSD) | Up to 16,000 | 250 MB/s | Legacy, still widely used |
+| **io2/io2 Block Express** | Up to 256,000 | 4,000 MB/s | Databases needing guaranteed IOPS |
+| **st1** (throughput HDD) | 500 | 500 MB/s | Big data, log processing |
+| **sc1** (cold HDD) | 250 | 250 MB/s | Infrequent access archives |
+| **Instance Store** (ephemeral) | Millions | 7,500+ MB/s | Caching, scratch (data lost on stop!) |
+
+```bash
+# Create and attach EBS volume
+aws ec2 create-volume --volume-type gp3 --size 500 \
+  --availability-zone ap-south-1a --encrypted \
+  --iops 10000 --throughput 500            # gp3: configure IOPS & throughput independently!
+
+aws ec2 attach-volume --volume-id vol-xxx \
+  --instance-id i-xxx --device /dev/sdf
+
+# EBS Snapshots (incremental backups → stored in S3)
+aws ec2 create-snapshot --volume-id vol-xxx \
+  --description "Pre-migration backup"
+
+# Restore from snapshot (create new volume)
+aws ec2 create-volume --snapshot-id snap-xxx \
+  --availability-zone ap-south-1a --volume-type gp3
+
+# Automate snapshots with Data Lifecycle Manager
+aws dlm create-lifecycle-policy \
+  --description "Daily snapshots, 30 day retention" \
+  --state ENABLED \
+  --policy-details '{
+    "PolicyType": "EBS_SNAPSHOT_MANAGEMENT",
+    "ResourceTypes": ["VOLUME"],
+    "Schedules": [{
+      "Name": "DailyBackup",
+      "CreateRule": {"Interval": 24, "IntervalUnit": "HOURS", "Times": ["02:00"]},
+      "RetainRule": {"Count": 30}
+    }]
+  }'
+
+# EBS Encryption — enable by default for ALL new volumes in the account
+aws ec2 enable-ebs-encryption-by-default
+```
+
+**Spot Instances — 90% savings with interruption handling:**
+
+```bash
+# Request Spot instances
+aws ec2 request-spot-instances \
+  --spot-price "0.05" \                     # max price willing to pay
+  --instance-count 5 \
+  --type "one-time" \
+  --launch-specification '{
+    "ImageId": "ami-xxx",
+    "InstanceType": "c5.2xlarge",
+    "SubnetId": "subnet-xxx"
+  }'
+
+# Better: use Spot Fleet (mix instance types for availability)
+aws ec2 request-spot-fleet --spot-fleet-request-config '{
+  "TargetCapacity": 10,
+  "LaunchSpecifications": [
+    {"InstanceType": "c5.2xlarge", "SubnetId": "subnet-1a"},
+    {"InstanceType": "c5a.2xlarge", "SubnetId": "subnet-1a"},
+    {"InstanceType": "c5.2xlarge", "SubnetId": "subnet-1b"}
+  ],
+  "AllocationStrategy": "capacityOptimized"   # pick least-likely-to-interrupt
+}'
+
+# Handle Spot interruption (2-minute warning)
+# Spot instances get a 2-min notice via Instance Metadata:
+# curl http://169.254.169.254/latest/meta-data/spot/instance-action
+# → {"action": "terminate", "time": "2026-06-02T10:00:00Z"}
+# → Drain connections, save state, deregister from LB
+```
+
+**Instance Metadata Service (IMDSv2) — security:**
+
+```bash
+# IMDSv2 enforces token-based access (prevents SSRF attacks!)
+TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+
+curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/instance-id
+# → i-1234567890abcdef0
+
+curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/api-role
+# → temporary AWS credentials (access key, secret, token)
+
+# ALWAYS enforce IMDSv2 (disable v1 — prevents Capital One-style SSRF attacks)
+aws ec2 modify-instance-metadata-options --instance-id i-xxx \
+  --http-tokens required                    # require IMDSv2
+```
+
+**Auto Scaling Group (ASG) + Load Balancer:**
 
 ```
                     ┌── ALB (Application Load Balancer) ──┐
@@ -21072,26 +21412,67 @@ Families worth knowing:
    │  AZ-1a  │           │  AZ-1b  │           │  AZ-1a  │
    └─────────┘           └─────────┘           └─────────┘
         └── Auto Scaling Group (min=2, max=10, desired=3) ──┘
+```
 
-# Scaling policies:
-#   Target tracking: keep CPU at 60% → ASG adds/removes instances
-#   Step scaling:    CPU > 80% → add 2, CPU < 30% → remove 1
-#   Scheduled:       scale up at 9am, down at 6pm
+```bash
+# Create Launch Template (modern replacement for Launch Configuration)
+aws ec2 create-launch-template --launch-template-name api-template \
+  --launch-template-data '{
+    "ImageId": "ami-xxx",
+    "InstanceType": "m6i.xlarge",
+    "SecurityGroupIds": ["sg-xxx"],
+    "IamInstanceProfile": {"Name": "api-role"},
+    "UserData": "base64-encoded-script",
+    "BlockDeviceMappings": [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 50, "VolumeType": "gp3", "Encrypted": true}}],
+    "MetadataOptions": {"HttpTokens": "required"}
+  }'
+
+# Create ASG
+aws autoscaling create-auto-scaling-group --auto-scaling-group-name api-asg \
+  --launch-template LaunchTemplateName=api-template,Version='$Latest' \
+  --min-size 2 --max-size 10 --desired-capacity 3 \
+  --vpc-zone-identifier "subnet-1a,subnet-1b" \
+  --target-group-arns arn:aws:elasticloadbalancing:xxx:xxx:targetgroup/api-tg/xxx \
+  --health-check-type ELB --health-check-grace-period 300
+
+# Scaling policies
+aws autoscaling put-scaling-policy --auto-scaling-group-name api-asg \
+  --policy-name cpu-target-tracking \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-configuration '{
+    "PredefinedMetricSpecification": {"PredefinedMetricType": "ASGAverageCPUUtilization"},
+    "TargetValue": 60.0
+  }'
+
+# Mixed Instances Policy (On-Demand + Spot for cost savings)
+# → 70% On-Demand base, 30% Spot for overflow
+# → Multiple instance types for Spot diversity
 ```
 
 | Load Balancer | Layer | Use Case |
 |--------------|-------|----------|
 | **ALB** | Layer 7 (HTTP) | Web apps, microservices, path/host-based routing |
-| **NLB** | Layer 4 (TCP/UDP) | Ultra-low latency, millions of requests/sec |
+| **NLB** | Layer 4 (TCP/UDP) | Ultra-low latency, millions of requests/sec, static IP |
+| **GWLB** | Layer 3 (Gateway) | Firewalls, IDS/IPS, network appliances |
 | **CLB** | Layer 4/7 | Legacy — don't use for new projects |
 
-**Key interview points:**
-- **AMI** = Amazon Machine Image — snapshot of an EC2's OS + software. Create custom AMIs for faster boot times.
-- **User Data** = shell script that runs on first boot (install packages, pull code).
-- **EBS** = Elastic Block Store — persistent disk attached to EC2. Types: `gp3` (general SSD), `io2` (high IOPS for databases), `st1` (throughput HDD for logs).
-- **Instance Store** = ephemeral disk — fastest I/O but data lost on stop/terminate.
+**Placement Groups:**
 
-📌 **TLDR:** "EC2 = rent virtual servers. Pick instance type by workload (t3 for burstable, m5 for general, c5 for compute, r5 for memory). Use ASG for auto-scaling + ALB for load balancing. Spot for 90% savings on fault-tolerant workloads. Reserved for steady-state. EBS for persistent disks."
+```
+Cluster:   All instances on same rack → lowest latency, highest throughput
+           Use for: HPC, distributed ML training
+           Risk: if rack fails, all instances affected
+
+Spread:    Each instance on different hardware → max fault isolation
+           Use for: critical instances that must survive hardware failure
+           Limit: 7 instances per AZ
+
+Partition:  Instances spread across logical partitions (separate racks)
+           Use for: Hadoop, Cassandra, Kafka (partition-aware apps)
+           Up to 7 partitions per AZ
+```
+
+📌 **TLDR:** "EC2 = rent virtual servers. Instance naming: family+generation.size (m6i.xlarge). Graviton (ARM) for 40% better price-perf. Spot saves 90% but can interrupt. gp3 for most EBS, io2 for databases. Enforce IMDSv2 to prevent SSRF. ASG + ALB for auto-scaling. Launch Templates over Launch Configs. Custom AMIs for fast boot."
 
 ---
 
@@ -21111,9 +21492,38 @@ Families worth knowing:
 | **S3 Glacier Deep Archive** | Long-term archive (12h retrieval) | Per request + time | 180 days |
 | **S3 Intelligent-Tiering** | Unknown access pattern | None | None |
 
+```bash
+# === S3 bucket creation with CLI ===
+
+# Create bucket
+aws s3api create-bucket --bucket my-app-data-prod \
+  --region ap-south-1 \
+  --create-bucket-configuration LocationConstraint=ap-south-1
+
+# Enable versioning (CRITICAL for production!)
+aws s3api put-bucket-versioning --bucket my-app-data-prod \
+  --versioning-configuration Status=Enabled
+
+# Block all public access (security default!)
+aws s3api put-public-access-block --bucket my-app-data-prod \
+  --public-access-block-configuration '{
+    "BlockPublicAcls": true,
+    "IgnorePublicAcls": true,
+    "BlockPublicPolicy": true,
+    "RestrictPublicBuckets": true
+  }'
+
+# Enable server-side encryption by default
+aws s3api put-bucket-encryption --bucket my-app-data-prod \
+  --server-side-encryption-configuration '{
+    "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "aws:kms", "KMSMasterKeyID": "alias/my-key"}}]
+  }'
+```
+
 ```python
-# === S3 with boto3 — common operations ===
+# === S3 with boto3 — complete operations ===
 import boto3
+import json
 from botocore.exceptions import ClientError
 
 s3 = boto3.client("s3")
@@ -21127,9 +21537,37 @@ s3.put_object(
     Key="data/config.json",
     Body=json.dumps(config),
     ContentType="application/json",
-    ServerSideEncryption="AES256",      # SSE-S3 encryption at rest
+    ServerSideEncryption="aws:kms",         # SSE-KMS encryption
+    SSEKMSKeyId="alias/my-key",
     Metadata={"uploaded-by": "tushar"},
 )
+
+# Download a file
+s3.download_file("my-bucket", "uploads/report.pdf", "/tmp/report.pdf")
+
+# Read object directly into memory
+response = s3.get_object(Bucket="my-bucket", Key="data/config.json")
+data = json.loads(response["Body"].read().decode("utf-8"))
+
+# List objects with prefix (like "ls")
+paginator = s3.get_paginator("list_objects_v2")
+for page in paginator.paginate(Bucket="my-bucket", Prefix="uploads/2026/"):
+    for obj in page.get("Contents", []):
+        print(f"  {obj['Key']}  ({obj['Size']} bytes)")
+
+# Delete object
+s3.delete_object(Bucket="my-bucket", Key="uploads/old-file.pdf")
+
+# Multipart upload (for files > 100 MB — boto3 handles automatically)
+from boto3.s3.transfer import TransferConfig
+config = TransferConfig(
+    multipart_threshold=100 * 1024 * 1024,    # 100 MB
+    multipart_chunksize=25 * 1024 * 1024,     # 25 MB chunks
+    max_concurrency=10,                        # parallel uploads
+    use_threads=True,
+)
+s3.upload_file("huge_dataset.parquet", "my-bucket", "data/dataset.parquet",
+               Config=config)
 
 # Generate pre-signed URL (temporary access without AWS credentials)
 url = s3.generate_presigned_url(
@@ -21138,6 +21576,15 @@ url = s3.generate_presigned_url(
     ExpiresIn=3600,  # 1 hour
 )
 # → https://my-bucket.s3.amazonaws.com/uploads/report.pdf?X-Amz-Signature=...
+
+# Pre-signed URL for UPLOAD (let clients upload directly to S3!)
+url = s3.generate_presigned_url(
+    "put_object",
+    Params={"Bucket": "my-bucket", "Key": "uploads/user-photo.jpg",
+            "ContentType": "image/jpeg"},
+    ExpiresIn=300,   # 5 minutes
+)
+# → Client does: PUT <url> with body=file_content
 
 # Lifecycle policy — automatically move old data to Glacier
 lifecycle = {
@@ -21155,19 +21602,177 @@ lifecycle = {
 s3.put_bucket_lifecycle_configuration(Bucket="my-bucket", LifecycleConfiguration=lifecycle)
 ```
 
-**Key features interviewers ask about:**
+**Versioning — rollback and accidental delete protection:**
+
+```python
+# List all versions of an object
+versions = s3.list_object_versions(Bucket="my-bucket", Prefix="data/config.json")
+for v in versions.get("Versions", []):
+    print(f"  VersionId={v['VersionId']}  LastModified={v['LastModified']}  Size={v['Size']}")
+
+# Get a specific version
+response = s3.get_object(Bucket="my-bucket", Key="data/config.json", VersionId="abc123")
+
+# "Delete" with versioning enabled → creates a DELETE MARKER (soft delete)
+# Original versions are still there! To truly delete, specify VersionId.
+
+# Restore from accidental delete
+s3.delete_object(Bucket="my-bucket", Key="data/config.json",
+                 VersionId="DELETE_MARKER_VERSION_ID")  # remove delete marker
+```
+
+**Bucket Policies — resource-based access control:**
+
+```python
+# Bucket policy (attached TO the bucket, vs IAM policy attached to user/role)
+policy = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowCrossAccountRead",
+            "Effect": "Allow",
+            "Principal": {"AWS": "arn:aws:iam::999888777666:root"},  # another account
+            "Action": ["s3:GetObject"],
+            "Resource": "arn:aws:s3:::my-bucket/*",
+        },
+        {
+            "Sid": "DenyUnencryptedUploads",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:PutObject",
+            "Resource": "arn:aws:s3:::my-bucket/*",
+            "Condition": {
+                "StringNotEquals": {"s3:x-amz-server-side-encryption": "aws:kms"}
+            }
+        }
+    ]
+}
+s3.put_bucket_policy(Bucket="my-bucket", Policy=json.dumps(policy))
+```
+
+**Encryption types — know the differences!**
+
+```
+SSE-S3 (AES256):
+  → AWS manages keys entirely
+  → No additional cost, no key rotation to manage
+  → ServerSideEncryption="AES256"
+  
+SSE-KMS (aws:kms):
+  → AWS KMS manages keys, YOU control key policy
+  → Audit trail in CloudTrail (who decrypted what)
+  → Can use customer-managed key (CMK) for cross-account
+  → SSEKMSKeyId="alias/my-key"
+  
+SSE-C (customer-provided):
+  → YOU provide the encryption key with every request
+  → AWS never stores the key — you manage it entirely
+  → Use case: extreme compliance requirements
+```
+
+**S3 Event Notifications — trigger on upload/delete:**
+
+```python
+# Configure S3 to notify Lambda when objects are uploaded
+s3.put_bucket_notification_configuration(
+    Bucket="my-bucket",
+    NotificationConfiguration={
+        "LambdaFunctionConfigurations": [{
+            "LambdaFunctionArn": "arn:aws:lambda:ap-south-1:xxx:function:process-upload",
+            "Events": ["s3:ObjectCreated:*"],
+            "Filter": {
+                "Key": {"FilterRules": [{"Name": "prefix", "Value": "uploads/"},
+                                        {"Name": "suffix", "Value": ".pdf"}]}
+            }
+        }],
+        "QueueConfigurations": [{
+            "QueueArn": "arn:aws:sqs:ap-south-1:xxx:upload-queue",
+            "Events": ["s3:ObjectCreated:*"],
+            "Filter": {"Key": {"FilterRules": [{"Name": "prefix", "Value": "images/"}]}}
+        }],
+    }
+)
+
+# Lambda handler for S3 event:
+def lambda_handler(event, context):
+    for record in event["Records"]:
+        bucket = record["s3"]["bucket"]["name"]
+        key = record["s3"]["object"]["key"]
+        size = record["s3"]["object"]["size"]
+        print(f"New upload: s3://{bucket}/{key} ({size} bytes)")
+```
+
+**CORS configuration (for frontend direct uploads):**
+
+```python
+s3.put_bucket_cors(
+    Bucket="my-bucket",
+    CORSConfiguration={
+        "CORSRules": [{
+            "AllowedOrigins": ["https://myapp.com", "http://localhost:3000"],
+            "AllowedMethods": ["GET", "PUT", "POST"],
+            "AllowedHeaders": ["*"],
+            "MaxAgeSeconds": 3600,
+        }]
+    }
+)
+```
+
+**Cross-Region Replication (CRR) — disaster recovery:**
+
+```bash
+# Prerequisites: versioning enabled on BOTH buckets
+aws s3api put-bucket-replication --bucket my-bucket \
+  --replication-configuration '{
+    "Role": "arn:aws:iam::xxx:role/s3-replication-role",
+    "Rules": [{
+      "Status": "Enabled",
+      "Destination": {
+        "Bucket": "arn:aws:s3:::my-bucket-dr-us-west-2",
+        "StorageClass": "STANDARD_IA"
+      }
+    }]
+  }'
+# → Every object uploaded to my-bucket is auto-replicated to DR region
+```
+
+**S3 Select — query data in place (without downloading):**
+
+```python
+# Query a CSV/JSON/Parquet file directly in S3!
+response = s3.select_object_content(
+    Bucket="my-bucket",
+    Key="data/sales_2026.csv",
+    ExpressionType="SQL",
+    Expression="SELECT s.product, s.revenue FROM s3object s WHERE s.revenue > '10000'",
+    InputSerialization={"CSV": {"FileHeaderInfo": "USE"}},
+    OutputSerialization={"JSON": {}},
+)
+for event in response["Payload"]:
+    if "Records" in event:
+        print(event["Records"]["Payload"].decode("utf-8"))
+
+# → Scans only relevant data, saves bandwidth and time
+# → Up to 400% faster and 80% cheaper than downloading entire file
+```
+
+**Key features — complete list:**
 
 | Feature | What It Does |
 |---------|-------------|
 | **Versioning** | Keep all versions of an object — enables rollback |
-| **Pre-signed URLs** | Temporary access to private objects without exposing credentials |
+| **Pre-signed URLs** | Temporary access to private objects (upload or download) |
 | **Event notifications** | Trigger Lambda/SQS/SNS when objects are created/deleted |
 | **Cross-Region Replication** | Auto-replicate objects to another region for DR |
 | **Static Website Hosting** | Serve HTML/CSS/JS directly from S3 (+ CloudFront for CDN) |
-| **Transfer Acceleration** | Upload via CloudFront edge locations for faster uploads |
+| **Transfer Acceleration** | Upload via CloudFront edge locations (50-500% faster) |
 | **Object Lock** | WORM (Write Once Read Many) — compliance/regulatory |
+| **S3 Select** | SQL queries directly on S3 objects (CSV/JSON/Parquet) |
+| **Batch Operations** | Bulk operations on billions of objects (copy, tag, Lambda) |
+| **Access Points** | Named network endpoints with distinct policies per app |
+| **Inventory Reports** | Daily/weekly CSV of all objects (size, storage class, encryption) |
 
-📌 **TLDR:** "S3 = infinitely scalable object storage with 11 nines durability. Storage classes trade cost for retrieval speed (Standard → IA → Glacier). Pre-signed URLs for temporary access. Lifecycle policies auto-archive old data. Event notifications trigger Lambda on upload. Versioning enables rollback."
+📌 **TLDR:** "S3 = infinitely scalable object storage with 11 nines durability. Storage classes trade cost for retrieval speed (Standard → IA → Glacier). Pre-signed URLs for temp access (upload + download). Lifecycle policies auto-archive old data. Event notifications trigger Lambda on upload. Versioning enables rollback. SSE-KMS for auditable encryption. S3 Select for in-place SQL queries."
 
 ---
 
@@ -21397,23 +22002,184 @@ SNS + SQS Fan-out:
                     └→ SQS: email-queue      → Notification Service
 ```
 
+**SQS with boto3 — complete patterns:**
+
+```python
+import boto3
+import json
+
+sqs = boto3.client("sqs")
+QUEUE_URL = "https://sqs.ap-south-1.amazonaws.com/123456789012/order-queue"
+
+# === Send a message ===
+sqs.send_message(
+    QueueUrl=QUEUE_URL,
+    MessageBody=json.dumps({"order_id": "ORD-123", "amount": 999.99}),
+    MessageAttributes={
+        "event_type": {"DataType": "String", "StringValue": "order_created"},
+        "priority": {"DataType": "Number", "StringValue": "1"},
+    },
+    DelaySeconds=0,          # optional: delay delivery up to 15 minutes
+)
+
+# Batch send (up to 10 messages — reduces API calls!)
+sqs.send_message_batch(
+    QueueUrl=QUEUE_URL,
+    Entries=[
+        {"Id": "1", "MessageBody": json.dumps({"order_id": f"ORD-{i}"})}
+        for i in range(10)
+    ]
+)
+
+# === Receive messages (long polling — ALWAYS use this!) ===
+response = sqs.receive_message(
+    QueueUrl=QUEUE_URL,
+    MaxNumberOfMessages=10,      # batch up to 10
+    WaitTimeSeconds=20,          # long polling — wait up to 20s for messages
+    VisibilityTimeout=60,        # hide from other consumers for 60s while processing
+    MessageAttributeNames=["All"],
+)
+
+for msg in response.get("Messages", []):
+    body = json.loads(msg["Body"])
+    receipt_handle = msg["ReceiptHandle"]
+    
+    try:
+        process_order(body)
+        # Delete ONLY after successful processing!
+        sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle)
+    except Exception as e:
+        # Don't delete → message becomes visible again after VisibilityTimeout
+        # After maxReceiveCount failures → moves to DLQ
+        print(f"Failed to process: {e}")
+
+# === FIFO Queue (ordered, exactly-once) ===
+sqs.send_message(
+    QueueUrl="https://sqs...amazonaws.com/123/order-queue.fifo",   # must end in .fifo
+    MessageBody=json.dumps({"order_id": "ORD-123"}),
+    MessageGroupId="customer-456",          # messages in same group = ordered
+    MessageDeduplicationId="ORD-123-v1",    # prevents duplicate processing
+)
+```
+
+```
+SQS Configuration deep dive:
+
+  Visibility Timeout (default 30s, max 12h):
+    → Time a message is hidden after being received
+    → Set to: avg processing time × 2 (buffer for retries)
+    → Too short: duplicate processing (two consumers see same message)
+    → Too long: stuck messages block the queue
+    
+  Long Polling (WaitTimeSeconds > 0):
+    → Consumer waits up to 20s for messages to arrive
+    → Reduces empty responses and API calls by 90%+
+    → ALWAYS enable this! (WaitTimeSeconds=20)
+    
+  Message Retention (default 4 days, max 14 days):
+    → How long unprocessed messages stay in queue
+    → After this: message is lost forever
+    
+  Max Message Size: 256 KB (use S3 for larger payloads)
+    → SQS Extended Client Library: store payload in S3, send pointer in SQS
+```
+
 | Feature | SQS Standard | SQS FIFO |
 |---------|-------------|----------|
 | **Ordering** | Best-effort | Strict FIFO within message group |
 | **Throughput** | Unlimited | 3,000 msg/s (with batching) |
 | **Delivery** | At-least-once | Exactly-once |
 | **Dedup** | None | 5-min dedup window |
+| **Queue name** | Any | Must end in `.fifo` |
 | **Use case** | High-throughput async | Order-sensitive processing |
 
-**Dead Letter Queue (DLQ):**
+**Dead Letter Queue (DLQ) — handle failures:**
+
+```bash
+# Create DLQ
+aws sqs create-queue --queue-name order-queue-dlq
+
+# Set DLQ on main queue (after 3 failed attempts → move to DLQ)
+aws sqs set-queue-attributes --queue-url $QUEUE_URL \
+  --attributes '{
+    "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:ap-south-1:xxx:order-queue-dlq\",\"maxReceiveCount\":\"3\"}"
+  }'
+
+# Redrive from DLQ back to main queue (after fixing the bug!)
+aws sqs start-message-move-task \
+  --source-arn arn:aws:sqs:ap-south-1:xxx:order-queue-dlq \
+  --destination-arn arn:aws:sqs:ap-south-1:xxx:order-queue
+```
 
 ```
 Main Queue → Consumer fails → retry (maxReceiveCount times) → DLQ
                                                                  ↓
                                               Human inspection / alert / reprocess
+                                                                 ↓
+                                              Fix bug → redrive DLQ → Main Queue
 ```
 
-📌 **TLDR:** "SQS = point-to-point queue (one consumer per message). SNS = pub/sub (all subscribers get every message). SQS + SNS = fan-out pattern. FIFO queues for ordering guarantees. DLQs for failed messages. Always design consumers to be idempotent."
+**SNS with boto3:**
+
+```python
+sns = boto3.client("sns")
+TOPIC_ARN = "arn:aws:sns:ap-south-1:xxx:order-events"
+
+# Publish to topic (all subscribers receive)
+sns.publish(
+    TopicArn=TOPIC_ARN,
+    Subject="New Order",
+    Message=json.dumps({"order_id": "ORD-123", "event": "created"}),
+    MessageAttributes={
+        "event_type": {"DataType": "String", "StringValue": "order_created"},
+        "amount": {"DataType": "Number", "StringValue": "999.99"},
+    },
+)
+
+# SNS Message Filtering — subscribers only get messages they care about!
+# Subscribe SQS queue with a filter policy:
+sns.subscribe(
+    TopicArn=TOPIC_ARN,
+    Protocol="sqs",
+    Endpoint="arn:aws:sqs:ap-south-1:xxx:payment-queue",
+    Attributes={
+        "FilterPolicy": json.dumps({
+            "event_type": ["order_created", "payment_required"],
+            "amount": [{"numeric": [">=", 100]}],    # only orders ≥ $100
+        })
+    }
+)
+# → payment-queue only gets order_created/payment_required events ≥ $100
+# → No code filtering needed — SNS does it server-side!
+```
+
+**SQS + Lambda integration (most common pattern):**
+
+```python
+# Lambda automatically polls SQS and invokes your function with batches
+def lambda_handler(event, context):
+    failed_ids = []
+    
+    for record in event["Records"]:
+        try:
+            body = json.loads(record["body"])
+            process_order(body)
+        except Exception as e:
+            failed_ids.append({"itemIdentifier": record["messageId"]})
+    
+    # Partial batch failure reporting — only retry failed messages!
+    return {"batchItemFailures": failed_ids}
+
+# Configure in AWS:
+# aws lambda create-event-source-mapping \
+#   --function-name process-orders \
+#   --event-source-arn arn:aws:sqs:xxx:order-queue \
+#   --batch-size 10 \
+#   --maximum-batching-window-in-seconds 5 \
+#   --function-response-types ReportBatchItemFailures
+```
+
+📌 **TLDR:** "SQS = point-to-point queue (one consumer per message). SNS = pub/sub (all subscribers get every message). SQS + SNS = fan-out pattern. FIFO queues for ordering. DLQs for failed messages. Long polling (WaitTimeSeconds=20) always. SNS filter policies for server-side routing. SQS + Lambda with partial batch failure for reliable processing."
 
 ---
 
@@ -21446,14 +22212,195 @@ Key Concepts:
   Container   = Docker container inside a Task
 ```
 
+**Task Definition — the blueprint (JSON):**
+
+```json
+{
+  "family": "api-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::xxx:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::xxx:role/api-task-role",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "123456.dkr.ecr.ap-south-1.amazonaws.com/api:v1.2",
+      "portMappings": [{"containerPort": 8000, "protocol": "tcp"}],
+      "environment": [
+        {"name": "ENV", "value": "production"},
+        {"name": "DB_HOST", "value": "mydb.cluster-xxx.ap-south-1.rds.amazonaws.com"}
+      ],
+      "secrets": [
+        {"name": "DB_PASSWORD", "valueFrom": "arn:aws:secretsmanager:ap-south-1:xxx:secret:db-password"},
+        {"name": "API_KEY", "valueFrom": "arn:aws:ssm:ap-south-1:xxx:parameter/api-key"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/api-service",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}
+```
+
+**ECR (Elastic Container Registry) + deploy workflow:**
+
+```bash
+# 1. Authenticate Docker to ECR
+aws ecr get-login-password --region ap-south-1 | \
+  docker login --username AWS --password-stdin 123456.dkr.ecr.ap-south-1.amazonaws.com
+
+# 2. Build and push
+docker build -t api:v1.2 .
+docker tag api:v1.2 123456.dkr.ecr.ap-south-1.amazonaws.com/api:v1.2
+docker push 123456.dkr.ecr.ap-south-1.amazonaws.com/api:v1.2
+
+# 3. Register task definition
+aws ecs register-task-definition --cli-input-json file://task-definition.json
+
+# 4. Create service
+aws ecs create-service \
+  --cluster prod-cluster \
+  --service-name api-service \
+  --task-definition api-service:1 \
+  --desired-count 3 \
+  --launch-type FARGATE \
+  --network-configuration '{
+    "awsvpcConfiguration": {
+      "subnets": ["subnet-private-1a", "subnet-private-1b"],
+      "securityGroups": ["sg-api"],
+      "assignPublicIp": "DISABLED"
+    }
+  }' \
+  --load-balancers '[{
+    "targetGroupArn": "arn:aws:elasticloadbalancing:xxx:targetgroup/api-tg/xxx",
+    "containerName": "api",
+    "containerPort": 8000
+  }]' \
+  --deployment-configuration '{
+    "minimumHealthyPercent": 50,
+    "maximumPercent": 200
+  }'
+
+# 5. Update service (rolling deploy — new task def version)
+aws ecs update-service --cluster prod-cluster \
+  --service api-service \
+  --task-definition api-service:2 \
+  --force-new-deployment
+```
+
+**ECS Exec — SSH into running containers (for debugging):**
+
+```bash
+# Enable ECS Exec on the service
+aws ecs update-service --cluster prod-cluster \
+  --service api-service --enable-execute-command
+
+# SSH into a running task container
+aws ecs execute-command --cluster prod-cluster \
+  --task arn:aws:ecs:xxx:task/prod-cluster/abc123 \
+  --container api \
+  --interactive --command "/bin/bash"
+# → You're now inside the container (like kubectl exec!)
+```
+
+**Auto Scaling for ECS Services:**
+
+```bash
+# Register scalable target
+aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/prod-cluster/api-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 2 --max-capacity 20
+
+# Target tracking policy (CPU-based)
+aws application-autoscaling put-scaling-policy \
+  --service-namespace ecs \
+  --resource-id service/prod-cluster/api-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-name cpu-tracking \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration '{
+    "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"},
+    "TargetValue": 60.0,
+    "ScaleInCooldown": 300,
+    "ScaleOutCooldown": 60
+  }'
+```
+
+**Deployment strategies:**
+
+```
+Rolling Update (default):
+  → Replace tasks in batches (minimumHealthyPercent=50, maximumPercent=200)
+  → Zero downtime — old tasks drain while new tasks start
+  → Rollback: update to previous task definition
+
+Blue/Green (with CodeDeploy):
+  → Run two identical environments (blue = current, green = new)
+  → ALB shifts traffic from blue → green
+  → Options: all-at-once, linear (10% every 5min), canary (10% then 90%)
+  → Automatic rollback on health check failure!
+
+  aws deploy create-deployment \
+    --application-name my-ecs-app \
+    --deployment-group-name production \
+    --revision '{"revisionType": "AppSpecContent", "appSpecContent": {"content": "..."}}'
+```
+
+**Service Discovery (AWS Cloud Map):**
+
+```bash
+# Register service in Cloud Map → DNS-based discovery
+aws servicediscovery create-service --name api \
+  --namespace-id ns-xxx \
+  --dns-config '{"DnsRecords": [{"Type": "A", "TTL": 10}]}'
+
+# Now other services can reach your API at:
+#   api.my-namespace.local
+# No hardcoded IPs or load balancers needed for internal services!
+```
+
 | | ECS on EC2 | ECS on Fargate |
 |---|---|---|
 | **Infra management** | You manage EC2 instances | AWS manages everything |
 | **Pricing** | Pay for EC2 instances | Pay per task (vCPU + memory per second) |
 | **Scaling** | ASG + ECS capacity provider | Automatic |
+| **Networking** | Bridge, host, or awsvpc | awsvpc only (each task gets its own ENI) |
+| **GPU support** | ✅ Yes | ❌ No |
 | **Best for** | GPU workloads, cost optimization at scale | Most workloads, zero-ops |
 
-📌 **TLDR:** "ECS = AWS's container orchestrator (simpler than K8s). Fargate = serverless ECS (no servers to manage). Task Definition = blueprint, Service = ensures N running tasks, Cluster = logical group. Use Fargate for most workloads; EC2 launch type for GPU or cost optimization."
+**ECS vs EKS vs App Runner — when to use what:**
+
+```
+App Runner:  "I just want to deploy a container/code, don't care about infra"
+             → Simplest, auto-scaling, built-in CI/CD, no cluster to manage
+             → Like GCP Cloud Run
+             
+ECS Fargate: "I need more control (networking, service mesh, task placement)"
+             → Moderate complexity, VPC integration, service discovery
+             → Like GKE Autopilot
+             
+EKS:         "I need Kubernetes (existing K8s expertise, multi-cloud, Helm charts)"
+             → Full K8s control plane, complex but powerful
+             → Like GKE Standard
+```
+
+📌 **TLDR:** "ECS = AWS's container orchestrator (simpler than K8s). Fargate = serverless ECS (no servers to manage). Task Definition = blueprint (image, CPU, memory, secrets, health check). ECR for container registry. ECS Exec for debugging. Blue/Green deployments with CodeDeploy. Cloud Map for service discovery. Use App Runner for simplest deployments, ECS for most workloads, EKS for Kubernetes."
 
 ---
 
@@ -21461,19 +22408,122 @@ Key Concepts:
 
 > **📣 Definition:** _"CloudFront = CDN (content delivery network) that caches content at 300+ edge locations. Route 53 = DNS service with health checks and routing policies. API Gateway = managed API layer that handles auth, rate limiting, and throttling for your backend APIs."_
 
-**CloudFront:**
+**CloudFront — deep dive:**
 
 ```
 User in India → Edge Location (Mumbai)
   ├─ Cache HIT → serve immediately (low latency)
   └─ Cache MISS → fetch from Origin (S3/ALB/EC2) → cache → serve
 
-Origins: S3 bucket, ALB, EC2, any HTTP endpoint
+Origins: S3 bucket, ALB, EC2, any HTTP endpoint, MediaStore
 Behaviors: /api/* → ALB origin, /* → S3 origin
-Invalidation: POST /invalidation with paths to purge
 ```
 
-**Route 53 — DNS routing policies:**
+```bash
+# Create CloudFront distribution with S3 origin
+aws cloudfront create-distribution --distribution-config '{
+  "Origins": {
+    "Items": [{
+      "Id": "S3-my-website",
+      "DomainName": "my-website.s3.ap-south-1.amazonaws.com",
+      "S3OriginConfig": {"OriginAccessIdentity": "origin-access-identity/cloudfront/EXXXXX"}
+    }, {
+      "Id": "ALB-api",
+      "DomainName": "my-alb-xxx.ap-south-1.elb.amazonaws.com",
+      "CustomOriginConfig": {"HTTPPort": 80, "HTTPSPort": 443, "OriginProtocolPolicy": "https-only"}
+    }],
+    "Quantity": 2
+  },
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "S3-my-website",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+    "Compress": true
+  },
+  "CacheBehaviors": {
+    "Items": [{
+      "PathPattern": "/api/*",
+      "TargetOriginId": "ALB-api",
+      "ViewerProtocolPolicy": "https-only",
+      "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+    }],
+    "Quantity": 1
+  },
+  "Enabled": true,
+  "DefaultRootObject": "index.html"
+}'
+
+# Invalidate cache (purge stale content)
+aws cloudfront create-invalidation --distribution-id EXXXXX \
+  --paths '/index.html' '/css/*' '/js/*'
+
+# Origin Access Control (OAC) — restrict S3 access to CloudFront only
+# → S3 bucket policy allows ONLY CloudFront, not direct public access
+# → Replaces legacy Origin Access Identity (OAI)
+```
+
+**CloudFront signed URLs/cookies (paid content, time-limited access):**
+
+```bash
+# Signed URL — single object, time-limited (like S3 pre-signed but via CDN)
+# Use for: paid video content, downloadable reports
+
+# Signed Cookies — multiple objects, one cookie
+# Use for: subscriber-only video streaming (many segments)
+
+# Lambda@Edge — run code at edge locations (customize request/response)
+# Use for: A/B testing, auth, redirects, SEO, image optimization
+# Runs in: us-east-1, deployed to all edges
+# Languages: Node.js, Python
+
+# CloudFront Functions — lightweight (1ms max, JS only)
+# Use for: URL rewrites, header manipulation, simple redirects
+# Cheaper and faster than Lambda@Edge
+```
+
+**Route 53 — DNS deep dive:**
+
+```bash
+# Create hosted zone
+aws route53 create-hosted-zone --name myapp.com \
+  --caller-reference "$(date +%s)"
+
+# Create A record (Alias to ALB — AWS-native, no TTL charge!)
+aws route53 change-resource-record-sets --hosted-zone-id ZXXXXX \
+  --change-batch '{
+    "Changes": [{
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "api.myapp.com",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "ZXXXXXXXXX",
+          "DNSName": "my-alb-xxx.ap-south-1.elb.amazonaws.com",
+          "EvaluateTargetHealth": true
+        }
+      }
+    }]
+  }'
+
+# Health check (monitor endpoint, auto-failover)
+aws route53 create-health-check --caller-reference "$(date +%s)" \
+  --health-check-config '{
+    "Type": "HTTPS",
+    "FullyQualifiedDomainName": "api.myapp.com",
+    "Port": 443,
+    "ResourcePath": "/health",
+    "RequestInterval": 30,
+    "FailureThreshold": 3
+  }'
+
+# Weighted routing (canary deployment — 10% to new version)
+# Record 1: api.myapp.com → ALB-v1 (weight: 90)
+# Record 2: api.myapp.com → ALB-v2 (weight: 10)
+
+# Failover routing (DR)
+# Primary: api.myapp.com → ALB in ap-south-1 (health check attached)
+# Secondary: api.myapp.com → ALB in us-east-1 (failover target)
+```
 
 | Policy | What It Does | Use Case |
 |--------|-------------|----------|
@@ -21482,8 +22532,10 @@ Invalidation: POST /invalidation with paths to purge
 | **Latency** | Route to lowest-latency region | Multi-region apps |
 | **Failover** | Primary/secondary with health check | Disaster recovery |
 | **Geolocation** | Route by user's country/continent | Compliance, localized content |
+| **Geoproximity** | Route by geographic distance (with bias) | Shift traffic between regions |
+| **Multivalue Answer** | Return multiple healthy endpoints | Simple load distribution |
 
-**API Gateway:**
+**API Gateway — deep dive:**
 
 ```
 Client → API Gateway → Lambda / HTTP backend / AWS service
@@ -21494,14 +22546,65 @@ Client → API Gateway → Lambda / HTTP backend / AWS service
            ├── Caching (TTL-based)
            ├── Usage plans & API keys
            └── WAF integration (firewall rules)
-
-Types:
-  REST API  — full-featured, request/response transformation
-  HTTP API  — simpler, cheaper, lower latency (recommended for most)
-  WebSocket — real-time bidirectional communication
 ```
 
-📌 **TLDR:** "CloudFront = CDN with 300+ edge locations. Route 53 = DNS with health checks and routing policies (weighted for canary, latency for multi-region). API Gateway = managed API layer with auth, rate limiting, caching. Use HTTP API (cheaper) unless you need REST API transformations."
+```bash
+# Create HTTP API (recommended for most use cases)
+aws apigatewayv2 create-api --name my-api \
+  --protocol-type HTTP \
+  --cors-configuration '{
+    "AllowOrigins": ["https://myapp.com"],
+    "AllowMethods": ["GET", "POST", "PUT", "DELETE"],
+    "AllowHeaders": ["Authorization", "Content-Type"],
+    "MaxAge": 3600
+  }'
+
+# Add Lambda integration
+aws apigatewayv2 create-integration --api-id xxx \
+  --integration-type AWS_PROXY \
+  --integration-uri arn:aws:lambda:ap-south-1:xxx:function:my-handler \
+  --payload-format-version "2.0"
+
+# Add route
+aws apigatewayv2 create-route --api-id xxx \
+  --route-key "GET /users/{userId}" \
+  --target integrations/xxx
+
+# Custom domain + ACM certificate
+aws apigatewayv2 create-domain-name --domain-name api.myapp.com \
+  --domain-name-configurations '[{
+    "CertificateArn": "arn:aws:acm:ap-south-1:xxx:certificate/xxx",
+    "EndpointType": "REGIONAL"
+  }]'
+```
+
+**Lambda Authorizer — custom auth logic:**
+
+```python
+# Lambda authorizer — validate JWT, API key, or custom token
+def lambda_handler(event, context):
+    token = event["headers"].get("authorization", "")
+    
+    try:
+        payload = jwt.decode(token.replace("Bearer ", ""), SECRET_KEY, algorithms=["HS256"])
+        return {
+            "isAuthorized": True,
+            "context": {
+                "userId": payload["sub"],
+                "role": payload["role"],
+            }
+        }
+    except jwt.InvalidTokenError:
+        return {"isAuthorized": False}
+```
+
+| Type | Cost | Latency | Features | Use Case |
+|------|------|---------|----------|----------|
+| **HTTP API** | $1.00/million | ~10ms | JWT auth, CORS, auto-deploy | Most APIs (recommended) |
+| **REST API** | $3.50/million | ~30ms | Transformations, caching, WAF, API keys | Legacy, complex APIs |
+| **WebSocket** | $1.00/million + connection time | Real-time | Bidirectional, connection management | Chat, live updates |
+
+📌 **TLDR:** "CloudFront = CDN with 300+ edge locations, signed URLs for paid content, Lambda@Edge for edge compute. Route 53 = DNS with routing policies (weighted for canary, latency for multi-region, failover for DR). API Gateway = managed API layer — use HTTP API ($1/million, lower latency) unless you need REST API features. Always use HTTPS, custom domains with ACM certs."
 
 ---
 
@@ -21529,23 +22632,250 @@ Types:
 └────────────────────────────────────────────────────────┘
 ```
 
+**RDS creation and configuration (CLI):**
+
+```bash
+# Create RDS PostgreSQL instance
+aws rds create-db-instance \
+  --db-instance-identifier mydb-prod \
+  --db-instance-class db.r6g.xlarge \          # Graviton for 30% better price-perf
+  --engine postgres \
+  --engine-version 15.4 \
+  --master-username admin \
+  --master-user-password "$(aws secretsmanager get-random-password --query RandomPassword --output text)" \
+  --allocated-storage 100 \
+  --storage-type gp3 \
+  --iops 3000 \
+  --multi-az \                                  # synchronous standby in another AZ
+  --db-subnet-group-name my-db-subnet-group \
+  --vpc-security-group-ids sg-db \
+  --storage-encrypted \                         # encryption at rest (AES-256)
+  --kms-key-id alias/my-rds-key \
+  --backup-retention-period 30 \                # 30 days of automated backups
+  --preferred-backup-window "02:00-03:00" \
+  --deletion-protection \                       # prevent accidental deletion!
+  --enable-performance-insights \               # query-level performance monitoring
+  --performance-insights-retention-period 731   # 2 years of PI data
+
+# Create read replica (async replication, read scaling)
+aws rds create-db-instance-read-replica \
+  --db-instance-identifier mydb-read-1 \
+  --source-db-instance-identifier mydb-prod \
+  --db-instance-class db.r6g.large
+
+# Cross-region read replica (for DR or latency)
+aws rds create-db-instance-read-replica \
+  --db-instance-identifier mydb-dr-useast \
+  --source-db-instance-identifier mydb-prod \
+  --region us-east-1                            # different region!
+```
+
+**Python connection — with connection pooling:**
+
+```python
+# === SQLAlchemy + psycopg2 — production pattern ===
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+engine = create_engine(
+    "postgresql+psycopg2://admin:password@mydb-prod.xxx.ap-south-1.rds.amazonaws.com:5432/myapp",
+    pool_size=20,                    # persistent connections
+    max_overflow=10,                 # burst capacity
+    pool_timeout=30,                 # wait for connection from pool
+    pool_recycle=1800,               # recycle connections every 30 min
+    pool_pre_ping=True,              # test connection before use (handles failover!)
+    echo=False,
+)
+Session = sessionmaker(bind=engine)
+
+# Use with context manager (auto-commit/rollback)
+with Session() as session:
+    user = session.query(User).filter_by(email="tushar@company.com").first()
+    session.commit()
+
+# === IAM Database Authentication (no passwords!) ===
+import boto3
+
+rds_client = boto3.client("rds")
+token = rds_client.generate_db_auth_token(
+    DBHostname="mydb-prod.xxx.ap-south-1.rds.amazonaws.com",
+    Port=5432,
+    DBUsername="api_user",
+    Region="ap-south-1",
+)
+# Use this token as the password — rotates automatically every 15 min!
+# → No secrets to manage, no password rotation needed
+```
+
+**RDS Proxy — connection pooling for Lambda:**
+
+```
+Lambda Problem:
+  100 concurrent Lambdas × 1 DB connection each = 100 connections!
+  Scales to 1000 Lambdas = 1000 connections → DB overwhelmed
+
+RDS Proxy Solution:
+  Lambda → RDS Proxy (connection pool) → RDS
+  → Proxy multiplexes 1000 Lambda connections into ~50 DB connections
+  → 66% faster failover (proxy pins to new primary)
+  → IAM authentication (no passwords in Lambda env vars)
+
+  aws rds create-db-proxy --db-proxy-name mydb-proxy \
+    --engine-family POSTGRESQL \
+    --auth '[{"AuthScheme": "SECRETS", "SecretArn": "arn:aws:secretsmanager:xxx:secret:db-creds"}]' \
+    --role-arn arn:aws:iam::xxx:role/rds-proxy-role \
+    --vpc-subnet-ids subnet-1a subnet-1b \
+    --vpc-security-group-ids sg-proxy
+```
+
+**Aurora — how it's different:**
+
+```
+Aurora Storage Architecture (6 copies across 3 AZs!):
+  ┌─────────────────────────────────────────────────────┐
+  │                  Aurora Cluster                       │
+  │                                                       │
+  │  Writer Instance        Reader Instance(s)           │
+  │  ┌──────────┐          ┌──────────┐ ┌──────────┐   │
+  │  │ Primary  │          │ Replica 1│ │ Replica 2│   │
+  │  │ (R+W)    │          │ (Read)   │ │ (Read)   │   │
+  │  └────┬─────┘          └────┬─────┘ └────┬─────┘   │
+  │       │                     │              │         │
+  │       ▼ ──── Shared Storage Layer (auto-grows) ──── │
+  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐     │
+  │  │Copy 1│ │Copy 2│ │Copy 3│ │Copy 4│ │Copy 5│ ... │
+  │  │AZ-1a │ │AZ-1a │ │AZ-1b │ │AZ-1b │ │AZ-1c │     │
+  │  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘     │
+  │  → 6 copies across 3 AZs, self-healing             │
+  │  → Can lose 2 copies and still write                │
+  │  → Can lose 3 copies and still read                 │
+  └─────────────────────────────────────────────────────┘
+```
+
+```bash
+# Create Aurora cluster
+aws rds create-db-cluster --db-cluster-identifier my-aurora \
+  --engine aurora-postgresql --engine-version 15.4 \
+  --master-username admin --master-user-password xxx \
+  --db-subnet-group-name my-db-subnet-group \
+  --vpc-security-group-ids sg-db \
+  --storage-encrypted --kms-key-id alias/my-key \
+  --backup-retention-period 30 \
+  --enable-performance-insights
+
+# Aurora Serverless v2 (auto-scaling compute!)
+aws rds create-db-instance --db-instance-identifier my-aurora-serverless \
+  --db-cluster-identifier my-aurora \
+  --db-instance-class db.serverless \           # serverless!
+  --engine aurora-postgresql
+
+# Set auto-scaling range (ACUs = Aurora Capacity Units)
+aws rds modify-db-cluster --db-cluster-identifier my-aurora \
+  --serverless-v2-scaling-configuration MinCapacity=0.5,MaxCapacity=64
+# → Scales from 0.5 ACU ($0.06/hr) to 64 ACU ($7.68/hr) based on load
+# → Scales in seconds, not minutes
+
+# Aurora Global Database (< 1 second cross-region replication)
+aws rds create-global-cluster --global-cluster-identifier my-global-db \
+  --source-db-cluster-identifier arn:aws:rds:ap-south-1:xxx:cluster:my-aurora
+# → Primary in Mumbai, read-only in US/Europe
+# → Failover to secondary region in < 1 minute
+```
+
+**Blue/Green Deployments (zero-downtime upgrades):**
+
+```bash
+# Create a blue/green deployment for major version upgrade
+aws rds create-blue-green-deployment \
+  --blue-green-deployment-name pg14-to-pg15 \
+  --source arn:aws:rds:ap-south-1:xxx:db:mydb-prod \
+  --target-engine-version 15.4
+
+# → AWS creates a "green" copy with the new version
+# → Replication keeps green in sync with blue
+# → When ready: switchover in < 1 minute with automatic rollback
+aws rds switchover-blue-green-deployment \
+  --blue-green-deployment-identifier bgd-xxx
+```
+
 | Feature | RDS | Aurora |
 |---------|-----|--------|
 | **Performance** | Standard | 3-5x PostgreSQL, 5x MySQL |
 | **Storage** | Provision up to 64 TB | Auto-grows 10 GB → 128 TB |
 | **Replicas** | Up to 5 read replicas | Up to 15 read replicas |
 | **Failover** | 60-120 seconds | < 30 seconds |
-| **Backups** | Automated + manual snapshots | Continuous to S3 |
+| **Backups** | Automated + manual snapshots | Continuous to S3, PITR to the second |
 | **Serverless** | No | Aurora Serverless v2 (auto-scales ACUs) |
 | **Global** | Cross-region read replicas | Aurora Global Database (< 1s replication) |
+| **Storage replication** | Single AZ (or sync standby) | 6 copies across 3 AZs |
+| **Blue/Green deploy** | ✅ Yes | ✅ Yes |
 
-📌 **TLDR:** "RDS = managed SQL databases (Postgres, MySQL, etc.). Aurora = AWS's enhanced engine (3-5x faster, auto-scaling storage, 15 replicas, <30s failover). Multi-AZ for HA. Read Replicas for read scaling. Aurora Serverless v2 for auto-scaling compute."
+**When to use what:**
+
+```
+RDS:      "I need PostgreSQL/MySQL with managed backups and failover"
+          → Standard workloads, known traffic patterns
+          → ~$100-500/month for typical production setup
+
+Aurora:   "I need high performance, auto-scaling storage, fast failover"
+          → High-traffic apps, unpredictable storage growth
+          → 20% more expensive than RDS, but much better perf
+
+Aurora Serverless v2: "Traffic is spiky or unpredictable"
+          → Dev/test environments, event-driven apps
+          → Scales to zero (0.5 ACU minimum)
+
+DynamoDB: "I need single-digit ms latency at any scale, flexible schema"
+          → Key-value access patterns, serverless architectures
+          → Not a replacement for SQL — different access patterns
+```
+
+📌 **TLDR:** "RDS = managed SQL databases (Postgres, MySQL, etc.). Aurora = AWS's enhanced engine (3-5x faster, 6 copies across 3 AZs, 15 replicas, <30s failover). RDS Proxy for Lambda connection pooling. Aurora Serverless v2 for auto-scaling compute. Blue/Green deployments for zero-downtime upgrades. IAM DB auth to avoid passwords. Performance Insights for query-level monitoring."
 
 ---
 
 ### 22.10 ElastiCache — Managed Redis & Memcached
 
 > **📣 Definition:** _"ElastiCache is managed Redis or Memcached — sub-millisecond in-memory caching. Use it for session stores, rate limiting, leaderboards, real-time analytics, and database query caching. Redis supports data structures (sorted sets, pub/sub, streams); Memcached is simpler (key-value only, multi-threaded)."_
+
+**Redis vs Memcached — know the difference:**
+
+| Feature | ElastiCache Redis | ElastiCache Memcached |
+|---------|------------------|---------------------|
+| **Data structures** | Strings, hashes, lists, sets, sorted sets, streams | Key-value only |
+| **Persistence** | ✅ Snapshots + AOF | ❌ In-memory only |
+| **Replication** | ✅ Primary-replica (Multi-AZ) | ❌ No replication |
+| **Pub/Sub** | ✅ Built-in | ❌ No |
+| **Transactions** | ✅ MULTI/EXEC | ❌ No |
+| **Cluster mode** | ✅ Horizontal scaling (partitioned) | ✅ Multi-node (auto-discovery) |
+| **Lua scripting** | ✅ Server-side scripts | ❌ No |
+| **Threads** | Single-threaded (I/O threads in 6.x+) | Multi-threaded |
+| **Best for** | Most use cases, persistence needed | Simple caching, large objects, multi-threaded perf |
+
+```bash
+# Create Redis replication group (primary + replicas)
+aws elasticache create-replication-group \
+  --replication-group-id my-redis-prod \
+  --replication-group-description "Production cache" \
+  --engine redis --engine-version 7.0 \
+  --cache-node-type cache.r6g.large \
+  --num-cache-clusters 3 \                     # 1 primary + 2 replicas
+  --multi-az-enabled \                          # automatic failover
+  --automatic-failover-enabled \
+  --at-rest-encryption-enabled \
+  --transit-encryption-enabled \                # TLS in-transit
+  --cache-subnet-group-name my-cache-subnet \
+  --security-group-ids sg-redis
+
+# Cluster mode enabled (horizontal scaling — data partitioned across shards)
+aws elasticache create-replication-group \
+  --replication-group-id my-redis-cluster \
+  --num-node-groups 3 \                         # 3 shards (partitions)
+  --replicas-per-node-group 2 \                # 2 replicas per shard
+  --cache-node-type cache.r6g.xlarge
+# → Total: 3 shards × 3 nodes = 9 nodes
+# → Data automatically partitioned by hash slot
+```
 
 **Caching strategies:**
 
@@ -21557,10 +22887,19 @@ Types:
 | **TTL** | Set expiration on cached items | Auto-eviction of stale data | May serve stale briefly |
 
 ```python
-# === ElastiCache Redis — common patterns ===
+# === ElastiCache Redis — production patterns ===
 import redis
+import json
 
-r = redis.Redis(host="my-cluster.cache.amazonaws.com", port=6379, decode_responses=True)
+# Connection pool (reuse connections — don't create per request!)
+pool = redis.ConnectionPool(
+    host="my-cluster.cache.amazonaws.com",
+    port=6379,
+    max_connections=50,
+    decode_responses=True,
+    ssl=True,                    # TLS for transit encryption
+)
+r = redis.Redis(connection_pool=pool)
 
 # Cache-aside pattern
 def get_user(user_id: str) -> dict:
@@ -21573,20 +22912,52 @@ def get_user(user_id: str) -> dict:
     r.setex(cache_key, 3600, json.dumps(user.to_dict()))  # cache for 1 hour
     return user.to_dict()
 
-# Rate limiting with sliding window
+# Rate limiting with sliding window (more accurate than fixed window)
 def check_rate_limit(user_id: str, limit: int = 100, window: int = 60) -> bool:
     key = f"ratelimit:{user_id}"
-    current = r.incr(key)
-    if current == 1:
-        r.expire(key, window)
-    return current <= limit
+    now = time.time()
+    pipe = r.pipeline()
+    pipe.zremrangebyscore(key, 0, now - window)  # remove old entries
+    pipe.zadd(key, {str(now): now})              # add current request
+    pipe.zcard(key)                               # count requests in window
+    pipe.expire(key, window)
+    _, _, count, _ = pipe.execute()
+    return count <= limit
+
+# Distributed lock (prevent double-processing)
+lock = r.lock("process-order:ORD-123", timeout=30, blocking_timeout=5)
+if lock.acquire():
+    try:
+        process_order("ORD-123")
+    finally:
+        lock.release()
+
+# Leaderboard with sorted sets
+r.zadd("leaderboard:daily", {"player_A": 1500, "player_B": 2200, "player_C": 1800})
+top_10 = r.zrevrange("leaderboard:daily", 0, 9, withscores=True)
+# → [("player_B", 2200.0), ("player_C", 1800.0), ("player_A", 1500.0)]
+rank = r.zrevrank("leaderboard:daily", "player_A")  # → 2 (0-indexed)
 
 # Session store
 r.hset(f"session:{session_id}", mapping={"user_id": "123", "role": "admin"})
 r.expire(f"session:{session_id}", 1800)  # 30 min TTL
 ```
 
-📌 **TLDR:** "ElastiCache = managed Redis/Memcached. Cache-aside for most read patterns. Write-through for consistency. Redis for data structures (sorted sets, pub/sub); Memcached for simple key-value. Use for session stores, rate limiting, query caching."
+**Eviction policies — what happens when memory is full:**
+
+```
+volatile-lru    → evict keys WITH expiry, least recently used (DEFAULT)
+allkeys-lru     → evict ANY key, least recently used (good for cache-only)
+volatile-ttl    → evict keys WITH expiry, shortest TTL first
+noeviction      → reject writes when full (use for critical data)
+
+# Set via parameter group:
+aws elasticache modify-cache-parameter-group \
+  --cache-parameter-group-name my-params \
+  --parameter-name-values "ParameterName=maxmemory-policy,ParameterValue=allkeys-lru"
+```
+
+📌 **TLDR:** "ElastiCache = managed Redis/Memcached. Cache-aside for most read patterns. Redis for data structures (sorted sets for leaderboards, pub/sub, streams, distributed locks). Connection pooling always. Sliding window for accurate rate limiting. Cluster mode for horizontal scaling. allkeys-lru eviction for pure caches."
 
 ---
 
@@ -21599,36 +22970,340 @@ r.expire(f"session:{session_id}", 1800)  # 30 min TTL
 | **CloudWatch Metrics** | Time-series data (CPU, memory, custom) | Dashboard, auto-scaling triggers |
 | **CloudWatch Logs** | Centralized log aggregation | Application logs, Lambda logs |
 | **CloudWatch Alarms** | Alert on metric thresholds | CPU > 80% → SNS → PagerDuty |
+| **CloudWatch Logs Insights** | SQL-like query language for logs | Search, aggregate, visualize logs |
+| **CloudWatch Synthetics** | Canary scripts that monitor endpoints | Uptime monitoring, API health checks |
 | **X-Ray** | Distributed tracing | Trace requests across Lambda → API GW → DynamoDB |
 | **CloudTrail** | Audit log of all AWS API calls | Security audit, compliance, "who deleted that bucket?" |
 
+**CloudWatch Metrics — custom metrics with boto3:**
+
 ```python
-# === Custom CloudWatch metric ===
+# === Custom CloudWatch metrics ===
 import boto3
 
 cloudwatch = boto3.client("cloudwatch")
 
+# Push a single metric
 cloudwatch.put_metric_data(
     Namespace="MyApp",
     MetricData=[{
         "MetricName": "OrderProcessingTime",
         "Value": 1.23,
         "Unit": "Seconds",
-        "Dimensions": [{"Name": "Environment", "Value": "production"}],
+        "Dimensions": [
+            {"Name": "Environment", "Value": "production"},
+            {"Name": "Service", "Value": "order-processor"},
+        ],
     }]
 )
 
-# === X-Ray tracing in Lambda ===
+# Push multiple metrics in batch (more efficient)
+cloudwatch.put_metric_data(
+    Namespace="MyApp",
+    MetricData=[
+        {"MetricName": "OrdersProcessed", "Value": 1, "Unit": "Count",
+         "Dimensions": [{"Name": "Environment", "Value": "production"}]},
+        {"MetricName": "OrderValue", "Value": 999.99, "Unit": "None",
+         "Dimensions": [{"Name": "Environment", "Value": "production"}]},
+        {"MetricName": "ErrorCount", "Value": 0, "Unit": "Count",
+         "Dimensions": [{"Name": "Environment", "Value": "production"}]},
+    ]
+)
+
+# Embedded Metric Format (EMF) — structured logging that auto-creates metrics!
+# Best for Lambda — no CloudWatch API calls needed, just print JSON
+import json
+
+def lambda_handler(event, context):
+    # This print statement AUTO-CREATES CloudWatch metrics!
+    print(json.dumps({
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "MyApp",
+                "Dimensions": [["Environment", "Service"]],
+                "Metrics": [
+                    {"Name": "ProcessingTime", "Unit": "Milliseconds"},
+                    {"Name": "OrderValue", "Unit": "None"},
+                ]
+            }]
+        },
+        "Environment": "production",
+        "Service": "order-processor",
+        "ProcessingTime": 45.2,
+        "OrderValue": 999.99,
+        "orderId": "ORD-123",          # extra fields for log context
+        "customerId": "CUST-456",
+    }))
+```
+
+**CloudWatch Alarms — production monitoring:**
+
+```bash
+# Create alarm: API error rate > 5% → SNS → PagerDuty
+aws cloudwatch put-metric-alarm \
+  --alarm-name "api-high-error-rate" \
+  --namespace "AWS/ApplicationELB" \
+  --metric-name "HTTPCode_Target_5XX_Count" \
+  --statistic Sum \
+  --period 300 \                          # 5 minute window
+  --evaluation-periods 2 \                # 2 consecutive periods
+  --threshold 50 \                        # 50 errors in 5 min
+  --comparison-operator GreaterThanThreshold \
+  --alarm-actions "arn:aws:sns:ap-south-1:xxx:pagerduty-alerts" \
+  --ok-actions "arn:aws:sns:ap-south-1:xxx:pagerduty-alerts" \
+  --dimensions Name=LoadBalancer,Value=app/my-alb/xxx \
+  --treat-missing-data notBreaching
+
+# Composite Alarm — only alert if BOTH conditions true
+aws cloudwatch put-composite-alarm \
+  --alarm-name "critical-service-degradation" \
+  --alarm-rule 'ALARM("api-high-error-rate") AND ALARM("api-high-latency")' \
+  --alarm-actions "arn:aws:sns:ap-south-1:xxx:critical-alerts"
+
+# Anomaly Detection — ML-based (no static thresholds!)
+aws cloudwatch put-anomaly-detector \
+  --namespace "MyApp" \
+  --metric-name "OrdersProcessed" \
+  --stat Average \
+  --dimensions Name=Environment,Value=production
+# → CloudWatch learns the normal pattern and alerts on deviations
+# → Much better than static thresholds for traffic that varies by time-of-day
+```
+
+**CloudWatch Logs — structured logging and queries:**
+
+```python
+# === Structured logging in Python (JSON logs!) ===
+import logging
+import json
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        if hasattr(record, "extra_data"):
+            log_entry.update(record.extra_data)
+        return json.dumps(log_entry)
+
+# Setup
+handler = logging.StreamHandler()
+handler.setFormatter(JSONFormatter())
+logger = logging.getLogger("myapp")
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+# Log with structured context
+logger.info("Order processed", extra={"extra_data": {
+    "order_id": "ORD-123",
+    "customer_id": "CUST-456",
+    "amount": 999.99,
+    "processing_time_ms": 45,
+    "trace_id": "1-abc-def",
+}})
+# Output: {"timestamp": "...", "level": "INFO", "message": "Order processed",
+#          "order_id": "ORD-123", "amount": 999.99, ...}
+```
+
+```bash
+# === CloudWatch Logs Insights — query your logs with SQL-like syntax ===
+
+# Find slowest API requests in the last hour
+fields @timestamp, @message
+| filter processing_time_ms > 1000
+| sort processing_time_ms desc
+| limit 20
+
+# Error rate by endpoint (last 24h)
+filter level = "ERROR"
+| stats count(*) as errors by endpoint
+| sort errors desc
+
+# P50, P90, P99 latency by endpoint
+stats avg(processing_time_ms) as avg_ms,
+      percentile(processing_time_ms, 50) as p50,
+      percentile(processing_time_ms, 90) as p90,
+      percentile(processing_time_ms, 99) as p99
+by endpoint
+| sort p99 desc
+
+# Aggregate errors over time (for dashboard graph)
+filter level = "ERROR"
+| stats count(*) as error_count by bin(5m)
+
+# Find specific order across all logs
+filter order_id = "ORD-123"
+| sort @timestamp asc
+```
+
+```bash
+# Metric Filter — turn log patterns into CloudWatch metrics automatically
+aws logs put-metric-filter \
+  --log-group-name /ecs/api-service \
+  --filter-name "error-count" \
+  --filter-pattern '{ $.level = "ERROR" }' \
+  --metric-transformations '[{
+    "metricName": "AppErrorCount",
+    "metricNamespace": "MyApp",
+    "metricValue": "1",
+    "defaultValue": 0
+  }]'
+# → Every ERROR log automatically increments a CloudWatch metric
+# → Set alarms on this metric!
+
+# Log retention (save money!)
+aws logs put-retention-policy \
+  --log-group-name /ecs/api-service \
+  --retention-in-days 30     # options: 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653
+```
+
+**X-Ray — distributed tracing:**
+
+```python
+# === X-Ray tracing in application code ===
 from aws_xray_sdk.core import xray_recorder, patch_all
-patch_all()  # auto-instrument boto3, requests, httplib
+
+# Auto-instrument boto3, requests, httplib, mysql, psycopg2
+patch_all()
+
+# In Lambda: just enable Active Tracing in Lambda config
+# aws lambda update-function-configuration \
+#   --function-name my-handler --tracing-config Mode=Active
 
 @xray_recorder.capture("process_order")
 def process_order(order_id):
-    # This function call appears as a subsegment in X-Ray traces
-    ...
+    # This function appears as a subsegment in X-Ray traces
+    
+    # Add annotations (indexed — can search/filter by these!)
+    xray_recorder.current_subsegment().put_annotation("order_id", order_id)
+    xray_recorder.current_subsegment().put_annotation("customer_tier", "premium")
+    
+    # Add metadata (not indexed — for debugging details)
+    xray_recorder.current_subsegment().put_metadata("order_details", {
+        "items": ["item-1", "item-2"],
+        "total": 999.99,
+    })
+    
+    # boto3 calls auto-traced by patch_all():
+    dynamodb.get_item(...)    # → shows as DynamoDB subsegment
+    sqs.send_message(...)     # → shows as SQS subsegment
+    requests.get("https://api.stripe.com/...")  # → shows as HTTP subsegment
 ```
 
-📌 **TLDR:** "CloudWatch = metrics + logs + alarms. X-Ray = distributed tracing. CloudTrail = audit trail. Set CloudWatch Alarms on critical metrics (error rate, latency p99). Use X-Ray to trace requests across microservices. CloudTrail for security auditing."
+```
+X-Ray Service Map (auto-generated):
+
+  Client → API Gateway → Lambda → DynamoDB
+                                 → SQS → Lambda → SNS
+                                 → S3
+                                 → External API (Stripe)
+
+  Each node shows:
+    - Average latency
+    - Request rate
+    - Error rate (4xx/5xx)
+    - Fault rate
+    
+  Click any edge to see:
+    - Trace details (full request flow)
+    - Latency histogram
+    - Annotations (searchable metadata)
+
+# Search traces by annotation:
+aws xray get-trace-summaries \
+  --start-time $(date -v-1H +%s) --end-time $(date +%s) \
+  --filter-expression 'annotation.order_id = "ORD-123"'
+```
+
+**CloudTrail — security audit log:**
+
+```bash
+# CloudTrail logs EVERY AWS API call in your account:
+# WHO did WHAT to WHICH resource, WHEN, and from WHERE
+
+# Example CloudTrail event:
+{
+  "eventTime": "2026-06-02T09:30:00Z",
+  "eventSource": "s3.amazonaws.com",
+  "eventName": "DeleteBucket",
+  "userIdentity": {
+    "type": "IAMUser",
+    "userName": "tushar",
+    "arn": "arn:aws:iam::xxx:user/tushar"
+  },
+  "sourceIPAddress": "203.0.113.50",
+  "requestParameters": {"bucketName": "my-important-bucket"}
+}
+# → "tushar deleted my-important-bucket from IP 203.0.113.50 at 9:30 AM"
+
+# Event types:
+#   Management Events: CreateBucket, RunInstances, CreateRole (enabled by default)
+#   Data Events: GetObject, PutObject, Invoke (must enable — high volume!)
+#   Insight Events: unusual API activity (burst of errors, unusual patterns)
+
+# Query CloudTrail events
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=DeleteBucket \
+  --start-time $(date -v-7d +%s) --end-time $(date +%s)
+
+# CloudTrail Lake — SQL queries on CloudTrail events
+# "Show me all IAM policy changes in the last 30 days"
+SELECT eventTime, userIdentity.userName, eventName, requestParameters
+FROM $EDS_ID
+WHERE eventSource = 'iam.amazonaws.com'
+  AND eventName LIKE '%Policy%'
+  AND eventTime > '2026-05-01'
+ORDER BY eventTime DESC
+```
+
+**CloudWatch Synthetics — canary monitoring:**
+
+```bash
+# Create a canary (automated script that checks your endpoint every X min)
+aws synthetics create-canary --name api-health-check \
+  --artifact-s3-location s3://my-canary-artifacts/ \
+  --execution-role-arn arn:aws:iam::xxx:role/canary-role \
+  --schedule '{"Expression": "rate(5 minutes)"}' \
+  --code '{"Handler": "apiCanary.handler", "S3Bucket": "canary-scripts", "S3Key": "api-check.zip"}' \
+  --runtime-version syn-python-selenium-3.0
+
+# → Canary runs every 5 min, checks your API
+# → CloudWatch alarm if canary fails
+# → Catches outages before users do!
+```
+
+**Production observability checklist:**
+
+```
+Essential CloudWatch Alarms:
+  ✅ API error rate (5xx) > threshold
+  ✅ API latency p99 > SLA target
+  ✅ CPU/Memory utilization > 80%
+  ✅ DynamoDB throttling (ThrottledRequests > 0)
+  ✅ SQS DLQ message count > 0 (something is failing!)
+  ✅ Lambda errors > 0
+  ✅ Lambda concurrent executions near limit
+  ✅ RDS connections > 80% of max
+  ✅ RDS CPU > 80%
+  ✅ ECS task count < desired count (tasks crashing)
+
+Essential Dashboards:
+  ✅ Service health (error rate, latency p50/p90/p99)
+  ✅ Infrastructure (CPU, memory, disk, network)
+  ✅ Business metrics (orders/min, revenue, active users)
+  ✅ Cost (daily spend, per-service breakdown)
+```
+
+📌 **TLDR:** "CloudWatch = metrics + logs + alarms + Logs Insights (SQL-like queries). Use Embedded Metric Format for Lambda metrics. Structured JSON logging always. Composite alarms for reducing noise. X-Ray = distributed tracing with annotations (searchable) + service maps. CloudTrail = audit trail (management events default, data events opt-in). Synthetics for uptime monitoring. Set alarms on: error rate, p99 latency, DLQ depth, Lambda errors, DB CPU."
 
 ---
 
@@ -22084,6 +23759,17 @@ gcloud iam service-accounts create my-api-sa \
 gcloud projects add-iam-policy-binding my-project \
   --member="serviceAccount:my-api-sa@my-project.iam.gserviceaccount.com" \
   --role="roles/cloudsql.client"
+
+# IAM Conditions (fine-grained — grant access only during business hours!)
+gcloud projects add-iam-policy-binding my-project \
+  --member="user:contractor@company.com" \
+  --role="roles/compute.admin" \
+  --condition='expression=request.time.getHours("Asia/Kolkata") >= 9 && request.time.getHours("Asia/Kolkata") <= 18,title=business-hours-only'
+
+# Grant access to a SPECIFIC resource (not whole project)
+gcloud storage buckets add-iam-policy-binding gs://my-data-bucket \
+  --member="serviceAccount:my-api-sa@my-project.iam.gserviceaccount.com" \
+  --role="roles/storage.objectViewer"
 ```
 
 **VPC — Global by Default (different from AWS!):**
@@ -22109,18 +23795,139 @@ Key difference from AWS:
   → Simplifies multi-region architectures significantly
 ```
 
-**Firewall Rules (GCP) vs Security Groups (AWS):**
+```bash
+# Create custom VPC (recommended over default)
+gcloud compute networks create my-vpc \
+  --subnet-mode=custom           # custom = you define subnets (recommended)
+  # --subnet-mode=auto           # auto = one subnet per region (dev/test)
+
+# Create subnets in different regions
+gcloud compute networks subnets create app-subnet \
+  --network=my-vpc \
+  --region=asia-south1 \
+  --range=10.0.1.0/24 \
+  --enable-private-ip-google-access \   # access GCP APIs without public IP!
+  --enable-flow-logs                    # VPC Flow Logs for monitoring
+
+gcloud compute networks subnets create db-subnet \
+  --network=my-vpc \
+  --region=asia-south1 \
+  --range=10.0.2.0/24 \
+  --purpose=PRIVATE                     # no external IPs allowed
+
+# Secondary ranges (for GKE pods/services)
+gcloud compute networks subnets update app-subnet \
+  --region=asia-south1 \
+  --add-secondary-ranges=pods=10.4.0.0/14,services=10.8.0.0/20
+```
+
+**Firewall Rules — priority-based (different from AWS Security Groups!):**
 
 ```bash
-# GCP firewall rules apply to VPC network, use tags/service accounts
+# GCP Firewall Rules key differences from AWS:
+#   ✅ Support DENY rules (AWS Security Groups can't deny!)
+#   ✅ Priority-based (lower number = higher priority)
+#   ✅ Can target by network tag OR service account
+#   ✅ Apply to the entire VPC network (not per-instance like AWS SGs)
+
+# Allow HTTP/HTTPS to web servers (by tag)
 gcloud compute firewall-rules create allow-http \
-  --network=default \
+  --network=my-vpc \
   --allow=tcp:80,tcp:443 \
   --target-tags=web-server \
-  --source-ranges=0.0.0.0/0
+  --source-ranges=0.0.0.0/0 \
+  --priority=1000
 
-# Apply tag to instances:
+# Allow internal communication (all VMs in VPC)
+gcloud compute firewall-rules create allow-internal \
+  --network=my-vpc \
+  --allow=tcp,udp,icmp \
+  --source-ranges=10.0.0.0/8 \
+  --priority=1000
+
+# DENY rule — block specific IP range (can't do this in AWS SGs!)
+gcloud compute firewall-rules create block-bad-ips \
+  --network=my-vpc \
+  --action=DENY \
+  --rules=all \
+  --source-ranges=198.51.100.0/24 \
+  --priority=500                  # higher priority than allow rules!
+
+# Target by service account (more secure than tags!)
+gcloud compute firewall-rules create allow-db-access \
+  --network=my-vpc \
+  --allow=tcp:5432 \
+  --target-service-accounts=db-sa@my-project.iam.gserviceaccount.com \
+  --source-service-accounts=api-sa@my-project.iam.gserviceaccount.com \
+  --priority=1000
+# → Only API service account can reach DB — no one else!
+
+# Apply tag to instances
 gcloud compute instances add-tags my-vm --tags=web-server
+```
+
+**Shared VPC & VPC Peering — connecting networks:**
+
+```
+Shared VPC (centralized networking — GCP unique!):
+  ┌─────────────────────────────────────┐
+  │ Host Project (network-admin)         │
+  │   VPC + subnets + firewall rules     │
+  │     ↕             ↕            ↕     │
+  │  ┌──────┐   ┌──────┐   ┌──────┐     │
+  │  │Proj A │   │Proj B │   │Proj C │   │
+  │  │(API)  │   │(data) │   │(ML)   │   │
+  │  └──────┘   └──────┘   └──────┘     │
+  └─────────────────────────────────────┘
+  
+  → Network team manages VPC centrally in host project
+  → App teams deploy resources in service projects
+  → Resources share the same VPC — simple, secure, centralized
+  → AWS has NO direct equivalent (closest: AWS RAM for VPC sharing)
+
+VPC Peering (connect two VPCs — non-transitive):
+  VPC-A ↔ VPC-B ↔ VPC-C
+  But VPC-A CANNOT reach VPC-C through VPC-B!
+  
+  gcloud compute networks peerings create peer-a-to-b \
+    --network=vpc-a \
+    --peer-project=project-b \
+    --peer-network=vpc-b
+```
+
+**Private Google Access — reach GCP APIs without public IP:**
+
+```bash
+# Enable Private Google Access on a subnet
+gcloud compute networks subnets update app-subnet \
+  --region=asia-south1 \
+  --enable-private-ip-google-access
+
+# Now VMs without public IPs can access:
+#   - Cloud Storage (gsutil, gcloud storage)
+#   - BigQuery
+#   - Pub/Sub
+#   - ALL Google APIs
+# Without going through the public internet!
+
+# For even more isolation: VPC Service Controls
+# → Create a security perimeter around GCP services
+# → Prevent data exfiltration even if credentials are compromised
+```
+
+**VPC Flow Logs — network monitoring:**
+
+```bash
+# Enable flow logs on a subnet
+gcloud compute networks subnets update app-subnet \
+  --region=asia-south1 \
+  --enable-flow-logs \
+  --logging-aggregation-interval=INTERVAL_5_SEC \
+  --logging-flow-sampling=0.5 \          # sample 50% of flows
+  --logging-metadata=INCLUDE_ALL_METADATA
+
+# Logs go to Cloud Logging → can export to BigQuery for analysis
+# Use for: security auditing, troubleshooting, cost optimization
 ```
 
 | GCP | AWS Equivalent |
@@ -22128,9 +23935,14 @@ gcloud compute instances add-tags my-vm --tags=web-server
 | Project | Account |
 | VPC (global) | VPC (regional) |
 | Subnet (regional) | Subnet (AZ-level) |
-| Firewall Rules (tags) | Security Groups (SG) |
+| Firewall Rules (priority-based, tags) | Security Groups (stateful, no deny) |
+| Shared VPC | ❌ No direct equivalent (RAM + Transit Gateway) |
+| VPC Peering | VPC Peering |
+| Private Google Access | VPC Endpoints (Gateway/Interface) |
+| VPC Flow Logs | VPC Flow Logs |
 | Service Account | IAM Role |
 | Cloud IAM | IAM |
+| VPC Service Controls | ❌ No equivalent |
 
 ---
 
@@ -22161,16 +23973,159 @@ gcloud compute instances create custom-vm \
 gcloud compute machine-types list --zones=asia-south1-a
 ```
 
-**Instance types comparison:**
+**Machine families:**
 
 | GCP Machine Family | AWS Equivalent | Best For |
 |-------------------|---------------|----------|
 | **e2** (cost-optimized) | t3/t3a | Dev/test, small workloads |
 | **n2/n2d** (general) | m5/m5a | Web servers, APIs |
 | **c2/c2d** (compute) | c5/c6i | ML training, batch processing |
-| **m2** (memory) | r5/r6i | In-memory DBs, caching |
-| **a2/g2** (GPU) | p3/p4 | ML inference, rendering |
+| **c3d** (compute, latest) | c7i | HPC, scientific computing |
+| **m2/m3** (memory) | r5/r6i | In-memory DBs, caching, SAP HANA |
+| **a2/g2** (GPU) | p3/p4/g5 | ML inference, rendering |
+| **t2d** (scale-out) | t3 | Microservices, web serving |
 | **Custom** | ❌ N/A | Exact CPU/RAM match |
+
+**Pricing models — cost optimization:**
+
+```
+1. On-demand (default):
+   Pay by the second (minimum 1 minute)
+   n2-standard-4: ~$0.19/hr
+
+2. Spot VMs (up to 91% discount — GCP's version of AWS Spot):
+   - Can be preempted with 30-second warning
+   - No minimum runtime guarantee
+   - Perfect for: batch processing, CI/CD, ML training, fault-tolerant workloads
+   
+   gcloud compute instances create batch-worker \
+     --provisioning-model=SPOT \
+     --instance-termination-action=STOP \    # or DELETE
+     --machine-type=c2-standard-8
+
+3. Committed Use Discounts (CUDs) — 1yr or 3yr commitment:
+   - 1-year: ~37% discount
+   - 3-year: ~55% discount
+   - Commit to CPU + memory (not instance type — more flexible than AWS RIs!)
+   
+   gcloud compute commitments create my-commitment \
+     --region=asia-south1 \
+     --plan=36-month \
+     --resources=vcpu=100,memory=400GB
+
+4. Sustained Use Discounts (automatic!):
+   - No commitment needed — just run the VM
+   - 25%+ usage in a month → automatic discount up to 30%
+   - AWS has NO equivalent — you must manually buy RIs/Savings Plans
+   
+   This is a HUGE GCP advantage for unpredictable workloads!
+```
+
+**Disk types — Persistent Disk & Local SSD:**
+
+| Disk Type | IOPS (read) | Throughput | Use Case | AWS Equivalent |
+|-----------|------------|-----------|----------|---------------|
+| **pd-standard** (HDD) | 3,000 | 120 MB/s | Backups, bulk storage | gp2/st1 |
+| **pd-balanced** | 15,000 | 240 MB/s | Boot disks, general | gp3 |
+| **pd-ssd** | 30,000 | 480 MB/s | Databases, low latency | io1/io2 |
+| **pd-extreme** | 120,000 | 2,400 MB/s | SAP HANA, high-perf DBs | io2 Block Express |
+| **Local SSD** (ephemeral) | 900,000 | 9,360 MB/s | Caching, scratch space | Instance Store |
+| **Hyperdisk** | 350,000 | 5,000 MB/s | Enterprise DBs, analytics | io2 Block Express |
+
+```bash
+# Attach additional disk
+gcloud compute disks create data-disk \
+  --size=500GB --type=pd-ssd --zone=asia-south1-a
+
+gcloud compute instances attach-disk my-api-server \
+  --disk=data-disk --zone=asia-south1-a
+
+# Resize disk (no downtime!)
+gcloud compute disks resize data-disk \
+  --size=1TB --zone=asia-south1-a
+
+# Create a snapshot (incremental backup)
+gcloud compute disks snapshot data-disk \
+  --snapshot-names=data-backup-2026-06-02 \
+  --zone=asia-south1-a
+
+# Schedule automatic snapshots
+gcloud compute resource-policies create snapshot-schedule daily-backup \
+  --region=asia-south1 \
+  --max-retention-days=30 \
+  --start-time=02:00 \
+  --daily-schedule
+gcloud compute disks add-resource-policies data-disk \
+  --resource-policies=daily-backup --zone=asia-south1-a
+```
+
+**Startup & shutdown scripts — automation:**
+
+```bash
+# Startup script (runs on boot — like AWS user-data)
+gcloud compute instances create my-vm \
+  --metadata=startup-script='#!/bin/bash
+    # Install dependencies
+    apt-get update && apt-get install -y python3-pip nginx
+    pip3 install gunicorn flask
+    # Pull app code from GCS
+    gsutil cp gs://my-bucket/app.tar.gz /opt/
+    cd /opt && tar -xzf app.tar.gz
+    # Start the application
+    gunicorn --bind 0.0.0.0:8000 app:app --daemon
+    systemctl start nginx'
+
+# Startup script from GCS (better for large scripts)
+gcloud compute instances create my-vm \
+  --metadata=startup-script-url=gs://my-bucket/startup.sh
+
+# Shutdown script (runs before VM stops — cleanup, drain connections)
+gcloud compute instances add-metadata my-vm \
+  --metadata=shutdown-script='#!/bin/bash
+    echo "Draining connections..." >> /var/log/shutdown.log
+    /opt/drain-connections.sh
+    echo "Shutdown complete" >> /var/log/shutdown.log'
+```
+
+**SSH access & OS Login:**
+
+```bash
+# SSH into instance (GCP manages SSH keys automatically)
+gcloud compute ssh my-api-server --zone=asia-south1-a
+
+# SSH with OS Login (recommended for orgs — uses IAM for SSH access)
+# Enable at project level:
+gcloud compute project-info add-metadata \
+  --metadata enable-oslogin=TRUE
+
+# Now SSH access = IAM role:
+#   roles/compute.osLogin         → regular user SSH access
+#   roles/compute.osAdminLogin    → sudo access
+# No more managing SSH keys per instance!
+
+# Transfer files via SCP
+gcloud compute scp ./config.yaml my-api-server:/opt/app/config.yaml \
+  --zone=asia-south1-a
+```
+
+**Live migration (GCP exclusive feature):**
+
+```
+When Google needs to perform host maintenance:
+  AWS: Your VM gets a scheduled maintenance notification → YOU handle it
+  GCP: Live migration — VM moves to another host transparently!
+  
+  Your VM keeps running. No reboot. No downtime. Automatic.
+  Network connections stay active. Disk I/O continues.
+  
+  Configure behavior:
+  gcloud compute instances set-scheduling my-vm \
+    --maintenance-policy=MIGRATE        # live migrate (default)
+    # --maintenance-policy=TERMINATE    # or terminate (for GPU/local SSD VMs)
+
+  This is why GCP can offer 99.99% SLA for a SINGLE instance
+  (AWS requires multi-AZ for similar SLA)
+```
 
 **Managed Instance Groups (MIGs) — GCP's Auto Scaling:**
 
@@ -22180,7 +24135,9 @@ gcloud compute instance-templates create api-template \
   --machine-type=e2-standard-2 \
   --image-family=ubuntu-2204-lts \
   --image-project=ubuntu-os-cloud \
-  --metadata=startup-script-url=gs://my-bucket/startup.sh
+  --metadata=startup-script-url=gs://my-bucket/startup.sh \
+  --tags=web-server \
+  --service-account=api-sa@project.iam.gserviceaccount.com
 
 # Create managed instance group with autoscaling
 gcloud compute instance-groups managed create api-group \
@@ -22189,34 +24146,123 @@ gcloud compute instance-groups managed create api-group \
   --size=2 \
   --zone=asia-south1-a
 
+# Autoscaling policies
 gcloud compute instance-groups managed set-autoscaling api-group \
   --zone=asia-south1-a \
   --min-num-replicas=2 \
   --max-num-replicas=10 \
-  --target-cpu-utilization=0.70
+  --target-cpu-utilization=0.70 \
+  --cool-down-period=60            # wait 60s before scaling decision
+
+# Update with zero-downtime rolling update
+gcloud compute instance-groups managed rolling-action start-update api-group \
+  --version=template=api-template-v2 \
+  --max-surge=3 \                  # create 3 extra instances during update
+  --max-unavailable=0 \            # zero downtime
+  --zone=asia-south1-a
+
+# Canary deployment (80% old, 20% new)
+gcloud compute instance-groups managed rolling-action start-update api-group \
+  --version=template=api-template-v1 \
+  --canary-version=template=api-template-v2,target-size=20% \
+  --zone=asia-south1-a
+```
+
+**GPU instances:**
+
+```bash
+# Attach GPU for ML workloads
+gcloud compute instances create ml-training \
+  --zone=asia-south1-a \
+  --machine-type=n1-standard-8 \
+  --accelerator=count=1,type=nvidia-tesla-t4 \
+  --maintenance-policy=TERMINATE \    # GPU VMs can't live-migrate
+  --image-family=common-cu121 \       # CUDA pre-installed
+  --image-project=deeplearning-platform-release
+
+# For ML training at scale → use Vertex AI (managed ML platform)
+# For inference → use Cloud Run with GPU (preview) or GKE with GPU node pools
 ```
 
 ---
 
 ### 23.3 Cloud Storage — Object Storage (GCS)
 
-> **📣 Definition:** _"Cloud Storage is GCP's object storage — equivalent to AWS S3. Globally unique bucket names, objects stored as blobs. Key differentiator: storage classes that auto-transition with lifecycle rules. Strongly consistent (unlike S3's eventual consistency in the past). Integrated with BigQuery, Dataflow, and ML services."_
+> **📣 Definition:** _"Cloud Storage is GCP's object storage — equivalent to AWS S3. Globally unique bucket names, objects stored as blobs with metadata. Key differentiator: strongly consistent (read-after-write guaranteed), storage classes that auto-transition with lifecycle rules, and deep integration with BigQuery, Dataflow, and ML services. 11 nines of durability (99.999999999%)."_
 
 ```bash
 # Create a bucket
 gcloud storage buckets create gs://my-app-assets-prod \
   --location=asia-south1 \
   --default-storage-class=STANDARD \
-  --uniform-bucket-level-access
+  --uniform-bucket-level-access          # recommended: IAM-only access control
 
 # Upload/download
 gcloud storage cp ./image.png gs://my-app-assets-prod/images/
 gcloud storage cp gs://my-app-assets-prod/images/image.png ./
 
-# Signed URL (pre-signed, time-limited access)
+# Recursive upload (entire directory)
+gcloud storage cp -r ./static/ gs://my-app-assets-prod/static/
+
+# Sync (like rsync — only uploads changed files)
+gcloud storage rsync -r ./build/ gs://my-app-assets-prod/frontend/
+
+# Signed URL (pre-signed, time-limited access — no auth needed)
 gcloud storage sign-url gs://my-app-assets-prod/report.pdf \
   --duration=1h \
   --private-key-file=sa-key.json
+```
+
+**Python SDK — programmatic access:**
+
+```python
+from google.cloud import storage
+import json
+
+client = storage.Client()
+bucket = client.bucket("my-app-assets-prod")
+
+# Upload a file
+blob = bucket.blob("reports/monthly.pdf")
+blob.upload_from_filename("/tmp/monthly.pdf")
+blob.content_type = "application/pdf"
+blob.patch()
+
+# Upload from string/bytes (useful for JSON, CSV)
+blob = bucket.blob("data/config.json")
+blob.upload_from_string(
+    json.dumps({"version": "2.0", "debug": False}),
+    content_type="application/json",
+)
+
+# Download
+blob = bucket.blob("reports/monthly.pdf")
+blob.download_to_filename("/tmp/downloaded.pdf")
+
+# Read as bytes (no temp file needed)
+data = blob.download_as_bytes()
+
+# List objects with prefix (like listing a "directory")
+blobs = client.list_blobs("my-app-assets-prod", prefix="images/", delimiter="/")
+for blob in blobs:
+    print(f"{blob.name} — {blob.size} bytes — {blob.updated}")
+
+# Delete
+blob = bucket.blob("temp/old-file.txt")
+blob.delete()
+
+# Generate signed URL programmatically
+url = blob.generate_signed_url(
+    version="v4",
+    expiration=3600,  # 1 hour
+    method="GET",
+)
+print(f"Signed URL: {url}")
+
+# Copy between buckets
+source_blob = bucket.blob("data/export.csv")
+destination_bucket = client.bucket("my-backup-bucket")
+bucket.copy_blob(source_blob, destination_bucket, "backups/export.csv")
 ```
 
 **Storage classes:**
@@ -22229,7 +24275,7 @@ gcloud storage sign-url gs://my-app-assets-prod/report.pdf \
 | **Archive** | Yearly access (compliance) | 99.9% | 365 days | ~$0.0012 |
 
 ```json
-// Lifecycle rule — auto-transition to cheaper storage
+// Lifecycle rules — auto-transition + auto-delete
 {
   "lifecycle": {
     "rule": [
@@ -22244,26 +24290,170 @@ gcloud storage sign-url gs://my-app-assets-prod/report.pdf \
       {
         "action": {"type": "Delete"},
         "condition": {"age": 365}
+      },
+      {
+        "action": {"type": "Delete"},
+        "condition": {"isLive": false, "numNewerVersions": 3}
       }
     ]
   }
 }
 ```
 
+**Versioning & retention (data protection):**
+
+```bash
+# Enable versioning (keep old versions of objects — like Git for files)
+gcloud storage buckets update gs://my-app-assets-prod --versioning
+
+# List all versions of an object
+gcloud storage ls --all-versions gs://my-app-assets-prod/config.json
+
+# Restore a previous version
+gcloud storage cp gs://my-app-assets-prod/config.json#1234567890 \
+  gs://my-app-assets-prod/config.json
+
+# Retention policy (prevent deletion for compliance — WORM)
+gcloud storage buckets update gs://compliance-data \
+  --retention-period=7y      # objects can't be deleted for 7 years
+  
+# Lock retention policy (IRREVERSIBLE — even admins can't delete)
+gcloud storage buckets update gs://compliance-data --lock-retention-policy
+
+# Object hold (prevent specific objects from deletion)
+gcloud storage objects update gs://my-bucket/critical-file.dat --temporary-hold
+```
+
+**Access control — IAM vs ACLs:**
+
+```
+Two models:
+
+1. Uniform bucket-level access (RECOMMENDED):
+   - IAM controls ALL access (no per-object ACLs)
+   - Simpler, auditable, consistent
+   
+   gcloud storage buckets update gs://my-bucket --uniform-bucket-level-access
+
+2. Fine-grained (legacy):
+   - Per-object ACLs possible
+   - Complex, hard to audit
+   - Avoid for new buckets
+
+Public access prevention (enforce private):
+   gcloud storage buckets update gs://my-bucket --public-access-prevention=enforced
+   → Even if someone adds a public IAM binding, it's BLOCKED
+```
+
+**CORS configuration (for web frontends):**
+
+```json
+// cors-config.json — allow frontend to access GCS directly
+[
+  {
+    "origin": ["https://myapp.com", "http://localhost:3000"],
+    "method": ["GET", "PUT", "POST", "DELETE"],
+    "responseHeader": ["Content-Type", "Authorization"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+```bash
+gcloud storage buckets update gs://my-app-assets-prod --cors-file=cors-config.json
+```
+
+**Event notifications — trigger on upload/delete:**
+
+```bash
+# Trigger a Cloud Function when files are uploaded
+gcloud storage buckets notifications create gs://my-uploads \
+  --topic=projects/my-project/topics/file-uploaded \
+  --event-types=OBJECT_FINALIZE     # fire when upload completes
+
+# Event types:
+#   OBJECT_FINALIZE   → new object created / overwritten
+#   OBJECT_DELETE     → object deleted
+#   OBJECT_ARCHIVE    → object archived (versioning)
+#   OBJECT_METADATA_UPDATE → metadata changed
+```
+
+```python
+# Cloud Function triggered by GCS upload
+import functions_framework
+
+@functions_framework.cloud_event
+def process_uploaded_file(cloud_event):
+    data = cloud_event.data
+    bucket = data["bucket"]
+    filename = data["name"]
+    size = data.get("size", "unknown")
+    
+    print(f"New file: gs://{bucket}/{filename} ({size} bytes)")
+    
+    if filename.endswith(".csv"):
+        load_to_bigquery(bucket, filename)
+    elif filename.endswith((".jpg", ".png")):
+        generate_thumbnail(bucket, filename)
+```
+
+**Encryption:**
+
+```
+Default: Google-managed encryption (automatic, no config needed)
+
+Customer-managed (CMEK) — you control the key:
+  gcloud storage buckets update gs://my-bucket \
+    --default-encryption-key=projects/my-project/locations/global/keyRings/my-ring/cryptoKeys/my-key
+
+Customer-supplied (CSEK) — you provide the key with each request:
+  # Key never stored by Google — maximum control, operational overhead
+  gcloud storage cp --encryption-key=BASE64_KEY ./data.csv gs://my-bucket/
+```
+
+**Performance tips:**
+
+```
+1. Parallel uploads (large files):
+   gcloud storage cp --parallel-composite-upload ./large-file.tar.gz gs://my-bucket/
+   → Splits file into chunks, uploads in parallel, composes on server
+
+2. Compose objects (combine small files server-side):
+   gcloud storage objects compose \
+     gs://my-bucket/chunk-1 gs://my-bucket/chunk-2 \
+     gs://my-bucket/combined-file
+
+3. Naming convention — avoid sequential keys:
+   ❌ gs://bucket/2026/06/02/file001.csv   (hot partition on same prefix)
+   ✅ gs://bucket/a3f2/2026/06/02/file.csv  (hash prefix distributes load)
+
+4. Transfer Acceleration (for cross-region uploads):
+   → Use a dual-region or multi-region bucket location
+   → Or use Storage Transfer Service for bulk migrations
+```
+
 | GCP Cloud Storage | AWS S3 Equivalent |
 |-------------------|-------------------|
 | Standard | S3 Standard |
 | Nearline | S3 Standard-IA |
-| Coldline | S3 Glacier Instant |
+| Coldline | S3 Glacier Instant Retrieval |
 | Archive | S3 Glacier Deep Archive |
 | gsutil / gcloud storage | aws s3 |
 | Signed URL | Pre-signed URL |
+| Object Lifecycle | S3 Lifecycle Rules |
+| Versioning | S3 Versioning |
+| Bucket Lock (retention) | S3 Object Lock (WORM) |
+| Notifications → Pub/Sub | S3 Events → SQS/SNS/Lambda |
+| Transfer Service | S3 Transfer Acceleration / DataSync |
+| CMEK | SSE-KMS |
 
 ---
 
 ### 23.4 Cloud Run — Serverless Containers
 
 > **📣 Definition:** _"Cloud Run is GCP's fully managed serverless platform for running containers. You give it a Docker image, it handles scaling (including scale-to-zero), load balancing, TLS, and custom domains. No infrastructure to manage. Pay only for requests served. It's like AWS Fargate + Lambda combined — containerized workloads with serverless scaling."_
+
+> **Layman:** _"You build a Docker container. You type one command. Cloud Run gives you an HTTPS URL. It scales to millions of requests, then scales back to zero when idle (no cost!). You never touch a server."_
 
 ```bash
 # Deploy a container to Cloud Run (one command!)
@@ -22293,8 +24483,180 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-# Cloud Run uses PORT env var (default 8080)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Cloud Run injects PORT env var (default 8080)
+CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
+```
+
+**Configuration deep-dive:**
+
+```bash
+# CPU allocation modes
+gcloud run deploy my-api \
+  --cpu-throttling                  # CPU only during request processing (cheaper)
+  # --no-cpu-throttling             # CPU always allocated (for background tasks)
+
+# Resource limits
+gcloud run deploy my-api \
+  --cpu=2 \                         # max 8 CPUs
+  --memory=4Gi \                    # max 32 GiB
+  --timeout=300 \                   # request timeout: max 3600s (1 hour)
+  --execution-environment=gen2      # gen2 = full Linux compat, better networking
+
+# Concurrency tuning (CRITICAL for performance)
+#   --concurrency=1    → 1 request per container (like Lambda)
+#   --concurrency=80   → 80 concurrent requests per container (default)
+#   --concurrency=250  → high concurrency for lightweight requests
+#   Rule: async frameworks (FastAPI) can handle high concurrency
+#         sync frameworks (Flask+gunicorn) → lower concurrency
+```
+
+**Traffic splitting & canary deployments:**
+
+```bash
+# Deploy new revision (doesn't get traffic yet)
+gcloud run deploy my-api \
+  --image=gcr.io/my-project/api:v2.0 \
+  --no-traffic                       # deploy but don't route traffic
+
+# Split traffic: 90% old, 10% new (canary)
+gcloud run services update-traffic my-api \
+  --to-revisions=my-api-v1=90,my-api-v2=10
+
+# Gradually shift traffic
+gcloud run services update-traffic my-api \
+  --to-revisions=my-api-v1=50,my-api-v2=50
+
+# Full rollout
+gcloud run services update-traffic my-api \
+  --to-latest
+
+# Instant rollback
+gcloud run services update-traffic my-api \
+  --to-revisions=my-api-v1=100
+
+# Tag a revision for preview (gets its own URL)
+gcloud run services update-traffic my-api \
+  --to-tags=canary=my-api-v2
+# → https://canary---my-api-xxxxx.run.app (preview URL)
+```
+
+**VPC connector — access private resources (Cloud SQL, Redis, internal APIs):**
+
+```bash
+# Create a VPC connector (Cloud Run → your VPC)
+gcloud compute networks vpc-access connectors create api-connector \
+  --region=asia-south1 \
+  --network=my-vpc \
+  --range=10.8.0.0/28             # dedicated IP range for connector
+
+# Deploy with VPC access
+gcloud run deploy my-api \
+  --vpc-connector=api-connector \
+  --vpc-egress=private-ranges-only   # only route private IPs through VPC
+  # --vpc-egress=all-traffic         # route ALL traffic through VPC
+
+# Now Cloud Run can reach:
+#   - Cloud SQL on private IP (10.0.1.5)
+#   - Memorystore Redis (10.0.1.6:6379)
+#   - Internal GKE services
+#   - On-prem via Cloud VPN/Interconnect
+```
+
+**Cloud SQL connection (recommended approach):**
+
+```bash
+# Connect via Cloud SQL Auth Proxy (built into Cloud Run!)
+gcloud run deploy my-api \
+  --add-cloudsql-instances=my-project:asia-south1:my-db \
+  --set-env-vars="DB_HOST=/cloudsql/my-project:asia-south1:my-db"
+
+# In Python — connect via Unix socket (no IP needed)
+# DATABASE_URL = "postgresql://user:pass@/mydb?host=/cloudsql/my-project:asia-south1:my-db"
+```
+
+**Secrets integration (no env vars for sensitive data!):**
+
+```bash
+# Store secret in Secret Manager
+echo -n "s3cr3t-p@ssw0rd" | gcloud secrets create db-password --data-file=-
+
+# Mount as env var in Cloud Run
+gcloud run deploy my-api \
+  --set-secrets="DB_PASSWORD=db-password:latest"
+
+# Mount as file (for certificates, config files)
+gcloud run deploy my-api \
+  --set-secrets="/secrets/db-cert=db-certificate:latest"
+```
+
+**Cloud Run Jobs (batch workloads — no HTTP needed):**
+
+```bash
+# Create a job (runs to completion, not a service)
+gcloud run jobs create data-migration \
+  --image=gcr.io/my-project/migrator:v1 \
+  --memory=2Gi \
+  --cpu=2 \
+  --task-timeout=3600 \           # 1 hour max
+  --max-retries=3 \
+  --parallelism=5 \               # run 5 tasks in parallel
+  --tasks=20                      # total 20 tasks
+
+# Execute the job
+gcloud run jobs execute data-migration
+
+# Schedule with Cloud Scheduler
+gcloud scheduler jobs create http nightly-cleanup \
+  --schedule="0 2 * * *" \
+  --uri="https://asia-south1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/my-project/jobs/data-migration:run" \
+  --oauth-service-account-email=scheduler-sa@my-project.iam.gserviceaccount.com
+
+# Use cases for Cloud Run Jobs:
+#   - Database migrations
+#   - ML model training
+#   - Report generation
+#   - Data pipeline tasks
+#   - Cleanup/maintenance scripts
+```
+
+**Startup & liveness probes:**
+
+```yaml
+# service.yaml — configure health checks
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: my-api
+spec:
+  template:
+    spec:
+      containers:
+        - image: gcr.io/my-project/api:v1
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 30
+```
+
+**Custom domain setup:**
+
+```bash
+# Map custom domain
+gcloud run domain-mappings create \
+  --service=my-api \
+  --domain=api.myapp.com \
+  --region=asia-south1
+
+# GCP automatically provisions TLS certificate (Let's Encrypt)
+# Update DNS: CNAME → ghs.googlehosted.com
 ```
 
 **Cloud Run vs AWS equivalents:**
@@ -22305,7 +24667,27 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 | Scale to zero | ✅ Yes | ❌ Fargate doesn't scale to 0 |
 | One-command deploy | `gcloud run deploy` | Need ECS task def + service + ALB |
 | Custom domains + TLS | ✅ Automatic | ACM + ALB + Route 53 |
-| Best for | APIs, microservices, webhooks | Same, but more ops overhead |
+| Traffic splitting | ✅ Built-in | ALB weighted target groups |
+| Batch jobs | Cloud Run Jobs | ECS Fargate Tasks |
+| Secrets | Secret Manager mount | SSM Parameter Store / Secrets Manager |
+| VPC access | VPC connector | VPC + ENI (always in VPC) |
+| Best for | APIs, microservices, webhooks, batch | Same, but more ops overhead |
+
+```
+When to use Cloud Run vs other GCP compute:
+
+  Cloud Run:    Stateless services, APIs, webhooks, async workers
+                → Scale to zero, pay per request, zero ops
+                
+  GKE:          Stateful apps, complex networking, GPU workloads
+                → Full K8s control, persistent volumes, service mesh
+                
+  Cloud Funcs:  Simple event handlers (Pub/Sub trigger, GCS upload)
+                → Single function, quick prototype, glue code
+                
+  Compute Eng:  Legacy apps, custom OS, persistent state, licensing
+                → Full VM control, specific hardware needs
+```
 
 ---
 
@@ -22488,102 +24870,814 @@ Anthos pricing is per-vCPU/month:
 
 ---
 
-### 23.6 Cloud SQL & Spanner — Managed Databases
+### 23.6 Cloud SQL, Spanner & GCP Database Services
 
-> **📣 Definition:** _"Cloud SQL is GCP's managed relational database (PostgreSQL, MySQL, SQL Server) — equivalent to AWS RDS. Cloud Spanner is Google's globally distributed, strongly consistent relational database — there is no AWS equivalent. Spanner gives you horizontal scaling of a relational DB with ACID transactions across continents."_
+> **📣 Definition:** _"GCP offers a full database portfolio: Cloud SQL (managed PostgreSQL/MySQL/SQL Server — equivalent to AWS RDS), Cloud Spanner (globally distributed relational DB — no AWS equivalent), Firestore (document DB — like DynamoDB), Bigtable (wide-column for analytics — like Cassandra), Memorystore (managed Redis/Memcached), and AlloyDB (PostgreSQL-compatible, 4x faster). Pick based on data model, scale, and consistency needs."_
 
-**Cloud SQL:**
+---
+
+**Cloud SQL — Managed Relational Database:**
 
 ```bash
-# Create a PostgreSQL instance
+# Create a PostgreSQL instance (production-ready)
 gcloud sql instances create my-db \
   --database-version=POSTGRES_15 \
   --tier=db-custom-4-16384 \        # 4 vCPUs, 16 GB RAM
   --region=asia-south1 \
-  --availability-type=REGIONAL \    # HA with automatic failover
+  --availability-type=REGIONAL \    # HA: standby in another zone, auto failover
   --storage-size=100GB \
   --storage-type=SSD \
-  --backup-start-time=02:00
+  --storage-auto-increase \         # auto-grow storage (never run out!)
+  --backup-start-time=02:00 \
+  --retained-backups-count=30 \
+  --enable-point-in-time-recovery \ # PITR — restore to any second!
+  --maintenance-window-day=SUN \
+  --maintenance-window-hour=3 \     # maintenance at 3 AM Sunday
+  --database-flags=max_connections=500,log_min_duration_statement=1000
 
-# Create a database
+# Create database and user
 gcloud sql databases create myapp --instance=my-db
+gcloud sql users create appuser --instance=my-db --password=SecurePass123
+```
 
-# Connect (via Cloud SQL Auth Proxy — secure, no public IP needed)
+**Cloud SQL Auth Proxy (the RIGHT way to connect):**
+
+```bash
+# Why Auth Proxy?
+#   ✅ No public IP needed (security!)
+#   ✅ Automatic IAM authentication (no password in env vars)
+#   ✅ Encrypted connection (mTLS)
+#   ✅ Works from GCE, GKE, Cloud Run, local dev
+
+# Local development
 cloud-sql-proxy --port=5432 my-project:asia-south1:my-db
+
+# In GKE — run as sidecar container
+# In Cloud Run — built-in (just --add-cloudsql-instances)
 ```
 
-**Cloud Spanner (GCP's crown jewel):**
+```python
+# === Python — connecting to Cloud SQL ===
+import sqlalchemy
+from sqlalchemy import create_engine, text
+
+# Option 1: Via Auth Proxy (recommended for GKE/Compute Engine)
+engine = create_engine(
+    "postgresql+psycopg2://appuser:SecurePass123@127.0.0.1:5432/myapp",
+    pool_size=10,              # connection pool size
+    max_overflow=5,            # additional connections under load
+    pool_timeout=30,           # seconds to wait for a connection
+    pool_recycle=1800,         # recycle connections every 30 min
+    pool_pre_ping=True,        # check connection health before use
+)
+
+# Option 2: Via Unix socket (Cloud Run / App Engine)
+engine = create_engine(
+    "postgresql+psycopg2://appuser:SecurePass123@/myapp",
+    connect_args={
+        "host": "/cloudsql/my-project:asia-south1:my-db"
+    },
+    pool_size=5,
+)
+
+# Option 3: IAM authentication (no password — uses service account!)
+engine = create_engine(
+    "postgresql+psycopg2://sa@my-project.iam@/myapp?"
+    "host=/cloudsql/my-project:asia-south1:my-db",
+    connect_args={"enable_iam_auth": True},
+)
+
+# Query example
+with engine.connect() as conn:
+    result = conn.execute(text("SELECT COUNT(*) FROM orders WHERE status = :s"), {"s": "active"})
+    count = result.scalar()
+    print(f"Active orders: {count}")
+```
+
+**High availability & read replicas:**
 
 ```
-What makes Spanner unique:
-  ✅ Globally distributed (multi-region)
-  ✅ Strongly consistent (linearizability) — even across continents!
-  ✅ Horizontally scalable (just add nodes)
-  ✅ SQL + ACID transactions
-  ✅ 99.999% availability (5 nines)
+Cloud SQL HA (REGIONAL availability type):
+  ┌──────────────────────────────────────────┐
+  │         asia-south1 Region               │
+  │  ┌─────────────┐    ┌─────────────┐      │
+  │  │ Zone-a       │    │ Zone-b       │      │
+  │  │ PRIMARY      │←──→│ STANDBY     │      │
+  │  │ (read/write) │sync│ (hot standby)│      │
+  │  └─────────────┘    └─────────────┘      │
+  │       ↓ async                              │
+  │  ┌─────────────┐                           │
+  │  │ READ REPLICA │  (read-only queries)     │
+  │  └─────────────┘                           │
+  └──────────────────────────────────────────┘
   
-  How? TrueTime API — GPS + atomic clocks in every data center
-  give globally synchronized timestamps → enables global consistency
-
-  Use case: Global financial systems, inventory management, gaming leaderboards
-  Tradeoff: Expensive ($0.90/node/hour) — justify with global scale needs
+  Failover: automatic (~60 seconds), same IP address
+  Replication: synchronous (primary ↔ standby), async (read replicas)
 ```
 
-| GCP | AWS Equivalent |
-|-----|---------------|
-| Cloud SQL (PostgreSQL/MySQL) | RDS |
-| Cloud SQL HA (regional) | RDS Multi-AZ |
-| Cloud SQL Read Replicas | RDS Read Replicas |
-| Cloud Spanner | ❌ No equivalent (DynamoDB is NoSQL, Aurora is single-region) |
-| Firestore | DynamoDB |
-| Bigtable | DynamoDB (wide-column) |
+```bash
+# Create read replica (for read-heavy workloads)
+gcloud sql instances create my-db-read \
+  --master-instance-name=my-db \
+  --region=asia-south1 \
+  --tier=db-custom-4-16384
+
+# Create cross-region replica (disaster recovery)
+gcloud sql instances create my-db-dr \
+  --master-instance-name=my-db \
+  --region=us-central1          # different region!
+
+# Promote replica to primary (for migration or DR)
+gcloud sql instances promote-replica my-db-dr
+```
+
+**Backups & point-in-time recovery:**
+
+```bash
+# Manual backup (before risky changes)
+gcloud sql backups create --instance=my-db --description="Pre-migration backup"
+
+# List backups
+gcloud sql backups list --instance=my-db
+
+# Restore from backup (creates new instance)
+gcloud sql instances restore-backup my-db \
+  --backup-id=1234567890
+
+# Point-in-time recovery (restore to ANY second!)
+gcloud sql instances clone my-db my-db-restored \
+  --point-in-time="2026-06-02T10:30:00.000Z"
+  
+# This uses write-ahead logs (WAL) — can recover to the exact second
+# before a bad DELETE/UPDATE was run. Lifesaver in production!
+```
+
+**Private IP (no public exposure):**
+
+```bash
+# Create Cloud SQL with private IP only (recommended for production)
+gcloud sql instances create my-db \
+  --database-version=POSTGRES_15 \
+  --tier=db-custom-4-16384 \
+  --region=asia-south1 \
+  --network=my-vpc \                # attach to your VPC
+  --no-assign-ip                    # NO public IP!
+
+# Now only resources in your VPC can reach the database
+# Cloud SQL Auth Proxy still works (it uses a private path)
+```
+
+**Database flags (performance tuning):**
+
+```bash
+# Set PostgreSQL flags
+gcloud sql instances patch my-db --database-flags=\
+  max_connections=500,\
+  shared_buffers=4096MB,\
+  effective_cache_size=12288MB,\
+  work_mem=64MB,\
+  maintenance_work_mem=512MB,\
+  log_min_duration_statement=1000,\    # log queries > 1 second
+  pg_stat_statements.track=all         # query performance tracking
+
+# Monitor slow queries
+gcloud sql operations list --instance=my-db
+# Or use Cloud SQL Insights (built-in query analytics dashboard)
+```
+
+---
+
+**Cloud Spanner — Google's Crown Jewel:**
+
+```
+What makes Spanner unique (interview gold):
+
+  ┌────────────────────────────────────────────────────────────┐
+  │ Traditional DBs:                                           │
+  │   Relational (PostgreSQL) → single-region, limited scale   │
+  │   NoSQL (DynamoDB)        → global scale, NO SQL/JOINs     │
+  │                                                            │
+  │ Spanner breaks the rules:                                  │
+  │   ✅ Relational (SQL + JOINs + schemas)                    │
+  │   ✅ Globally distributed (multi-region)                   │
+  │   ✅ Strongly consistent (linearizability across continents)│
+  │   ✅ Horizontally scalable (just add nodes)                │
+  │   ✅ ACID transactions (across tables, across regions!)    │
+  │   ✅ 99.999% availability (5 nines — 5 min downtime/year) │
+  │                                                            │
+  │ How? TrueTime API:                                         │
+  │   GPS receivers + atomic clocks in EVERY Google data center│
+  │   → Globally synchronized timestamps (±7ms accuracy)       │
+  │   → Enables strong consistency without sacrificing speed    │
+  │                                                            │
+  │ CAP theorem: Spanner effectively gives CP + high A         │
+  │ (practically CA for most real-world scenarios)              │
+  └────────────────────────────────────────────────────────────┘
+```
+
+```bash
+# Create a Spanner instance
+gcloud spanner instances create my-spanner \
+  --config=regional-asia-south1 \    # or nam-eur-asia1 for multi-region
+  --processing-units=1000 \          # 1 node = 1000 PUs
+  --description="Production Spanner"
+
+# Create a database with schema
+gcloud spanner databases create orders-db \
+  --instance=my-spanner \
+  --ddl='CREATE TABLE Orders (
+    OrderId STRING(36) NOT NULL,
+    CustomerId STRING(36) NOT NULL,
+    Amount FLOAT64,
+    Status STRING(20),
+    CreatedAt TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
+  ) PRIMARY KEY (OrderId)'
+```
+
+```python
+# === Python — Cloud Spanner SDK ===
+from google.cloud import spanner
+
+client = spanner.Client()
+instance = client.instance("my-spanner")
+database = instance.database("orders-db")
+
+# Insert
+def insert_order(transaction):
+    transaction.insert(
+        table="Orders",
+        columns=["OrderId", "CustomerId", "Amount", "Status", "CreatedAt"],
+        values=[
+            ("ORD-001", "CUST-42", 99.99, "COMPLETED", spanner.COMMIT_TIMESTAMP),
+        ],
+    )
+
+database.run_in_transaction(insert_order)
+
+# Read with SQL
+with database.snapshot() as snapshot:
+    results = snapshot.execute_sql(
+        "SELECT OrderId, Amount FROM Orders "
+        "WHERE CustomerId = @cust_id AND Status = @status",
+        params={"cust_id": "CUST-42", "status": "COMPLETED"},
+        param_types={
+            "cust_id": spanner.param_types.STRING,
+            "status": spanner.param_types.STRING,
+        },
+    )
+    for row in results:
+        print(f"Order: {row[0]}, Amount: ${row[1]}")
+```
+
+```
+Spanner schema design — interleaved tables (unique to Spanner):
+
+  # Interleaving = co-locate child rows with parent (same physical node)
+  CREATE TABLE Customers (
+    CustomerId STRING(36) NOT NULL,
+    Name STRING(200),
+  ) PRIMARY KEY (CustomerId);
+
+  CREATE TABLE Orders (
+    CustomerId STRING(36) NOT NULL,
+    OrderId STRING(36) NOT NULL,
+    Amount FLOAT64,
+  ) PRIMARY KEY (CustomerId, OrderId),     # composite key
+    INTERLEAVE IN PARENT Customers ON DELETE CASCADE;
+    
+  # Why? JOINing Customers + Orders is now LOCAL (same node)
+  # No cross-node network hops → much faster queries
+  
+  This is a key interview point — Spanner's schema design differs
+  from traditional PostgreSQL because of distributed storage.
+```
+
+**Spanner pricing:**
+
+```
+Processing Units (PUs):
+  100 PU  = smallest unit (~$0.09/hr)
+  1000 PU = 1 node (~$0.90/hr ≈ $657/month)
+  
+  Each node handles ~10,000 reads/sec or 2,000 writes/sec
+  
+  When to justify the cost:
+    ✅ Global users needing strong consistency
+    ✅ Financial transactions across regions
+    ✅ 99.999% availability requirement
+    ❌ Single-region app → use Cloud SQL (much cheaper)
+    ❌ Small startup → WAY too expensive
+```
+
+---
+
+**Firestore — Document Database (NoSQL):**
+
+```python
+from google.cloud import firestore
+
+db = firestore.Client()
+
+# Create/update a document
+db.collection("users").document("user-42").set({
+    "name": "Tushar",
+    "email": "tushar@example.com",
+    "plan": "premium",
+    "created_at": firestore.SERVER_TIMESTAMP,
+})
+
+# Query with filters
+users = db.collection("users") \
+    .where("plan", "==", "premium") \
+    .order_by("created_at", direction=firestore.Query.DESCENDING) \
+    .limit(10) \
+    .stream()
+
+for user in users:
+    print(f"{user.id}: {user.to_dict()}")
+
+# Real-time listener (like Firebase — updates push to client!)
+def on_snapshot(doc_snapshot, changes, read_time):
+    for change in changes:
+        if change.type.name == "ADDED":
+            print(f"New user: {change.document.id}")
+
+db.collection("users").on_snapshot(on_snapshot)
+```
+
+```
+Firestore vs DynamoDB:
+  Firestore:  Document model, real-time sync, offline support, Firebase integration
+  DynamoDB:   Key-value/document, DAX caching, DynamoDB Streams
+  
+  Use Firestore for: mobile/web apps, real-time features, Firebase ecosystem
+  Use Bigtable for: time-series, IoT, analytics (100M+ rows)
+```
+
+---
+
+**Complete GCP database decision matrix:**
+
+| Database | Type | Best For | Max Scale | AWS Equivalent |
+|----------|------|----------|-----------|---------------|
+| **Cloud SQL** | Relational (managed) | CRUD apps, APIs, traditional workloads | 96 vCPUs, 624 GB RAM | RDS |
+| **AlloyDB** | PostgreSQL-compatible | 4x faster analytics, AI/ML workloads | Auto-scales | Aurora PostgreSQL |
+| **Cloud Spanner** | Relational (global) | Global transactions, 5-nines availability | Unlimited (add nodes) | ❌ No equivalent |
+| **Firestore** | Document (NoSQL) | Mobile/web apps, real-time sync | Auto-scales | DynamoDB |
+| **Bigtable** | Wide-column (NoSQL) | Time-series, IoT, analytics (petabytes) | Unlimited | DynamoDB / Cassandra |
+| **Memorystore** | In-memory (Redis) | Caching, session store, leaderboards | 300 GB | ElastiCache |
+| **BigQuery** | Data warehouse | Analytics, SQL over petabytes | Unlimited | Redshift |
+
+```
+Decision flow:
+  Need SQL + JOINs?
+    → Single region? → Cloud SQL (or AlloyDB for performance)
+    → Multi-region?  → Cloud Spanner
+    
+  NoSQL / document?
+    → Real-time sync needed? → Firestore
+    → High-throughput writes (IoT/time-series)? → Bigtable
+    
+  Caching layer?
+    → Memorystore (Redis)
+    
+  Analytics?
+    → BigQuery (always)
+```
 
 ---
 
 ### 23.7 Pub/Sub — Messaging & Event Streaming
 
-> **📣 Definition:** _"Cloud Pub/Sub is GCP's fully managed messaging service — equivalent to AWS SQS + SNS combined. Publishers send messages to Topics, Subscribers receive them via Subscriptions. At-least-once delivery, push or pull mode, and massive scale (billions of messages/day). It's serverless — no brokers to manage."_
+> **📣 Definition:** _"Cloud Pub/Sub is GCP's fully managed, serverless messaging service — equivalent to AWS SQS + SNS combined in one product. Publishers send messages to Topics, Subscribers receive them via Subscriptions. At-least-once delivery by default, exactly-once available. Push or pull mode. Scales to billions of messages/day with zero ops. No brokers, no partitions, no capacity planning."_
+
+> **Layman:** _"Imagine a newspaper publisher (Topic) and multiple subscribers. Each subscriber gets their own copy of every newspaper. If a subscriber is on vacation (offline), newspapers pile up and are delivered when they're back. Pub/Sub does this for data messages between your microservices — the publisher doesn't need to know who's listening."_
+
+**Pub/Sub architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         PUB/SUB                               │
+│                                                               │
+│  Publisher A ──→ ┐                                            │
+│  Publisher B ──→ ├──→  TOPIC (order-events)                   │
+│  Publisher C ──→ ┘         │                                  │
+│                            ├──→ Subscription 1 (pull) ──→ Service A  │
+│                            ├──→ Subscription 2 (pull) ──→ Service B  │
+│                            ├──→ Subscription 3 (push) ──→ Cloud Run  │
+│                            └──→ Subscription 4 (push) ──→ Cloud Func │
+│                                                               │
+│  Key concepts:                                                │
+│    - Topic: named channel (like SNS topic)                    │
+│    - Subscription: named connection to a topic                │
+│    - Each subscription gets ALL messages (fan-out)            │
+│    - Multiple subscribers on ONE subscription = load balancing│
+│    - Messages retained for 7 days (configurable, max 31 days)│
+└─────────────────────────────────────────────────────────────┘
+
+vs AWS:
+  Pub/Sub Topic        ≈  SNS Topic
+  Pub/Sub Subscription ≈  SQS Queue (subscribed to SNS)
+  One product does both SNS + SQS in GCP!
+```
+
+**Creating topics and subscriptions:**
+
+```bash
+# Create a topic
+gcloud pubsub topics create order-events
+
+# Create a pull subscription
+gcloud pubsub subscriptions create order-processor \
+  --topic=order-events \
+  --ack-deadline=60 \              # 60 seconds to ack before redelivery
+  --message-retention-duration=7d \ # retain messages for 7 days
+  --expiration-period=never         # subscription never auto-deletes
+
+# Create a push subscription (pushes to an HTTPS endpoint)
+gcloud pubsub subscriptions create order-webhook \
+  --topic=order-events \
+  --push-endpoint=https://my-api.run.app/webhook/orders \
+  --push-auth-service-account=push-sa@project.iam.gserviceaccount.com
+```
+
+**Publishing messages (Python):**
 
 ```python
-# === Publish messages ===
+# === Basic publishing ===
 from google.cloud import pubsub_v1
+import json
 
 publisher = pubsub_v1.PublisherClient()
 topic_path = publisher.topic_path("my-project", "order-events")
 
-data = json.dumps({"order_id": "123", "status": "completed"}).encode()
+data = json.dumps({"order_id": "ORD-123", "status": "completed", "amount": 99.99}).encode()
 future = publisher.publish(
     topic_path,
     data,
-    event_type="order.completed",    # attributes for filtering
+    # Attributes (metadata) — used for filtering
+    event_type="order.completed",
     source="payment-service",
+    region="asia-south1",
 )
-print(f"Published: {future.result()}")  # returns message ID
+print(f"Published message ID: {future.result()}")
 
-# === Subscribe (pull mode) ===
+
+# === Batch publishing (high throughput) ===
+from google.cloud.pubsub_v1.types import BatchSettings
+
+batch_settings = BatchSettings(
+    max_messages=100,        # batch up to 100 messages
+    max_bytes=1_000_000,     # or 1 MB
+    max_latency=0.1,         # or 100ms — whichever comes first
+)
+publisher = pubsub_v1.PublisherClient(batch_settings=batch_settings)
+
+# Publish 1000 messages — SDK auto-batches them
+futures = []
+for i in range(1000):
+    data = json.dumps({"order_id": f"ORD-{i}"}).encode()
+    future = publisher.publish(topic_path, data)
+    futures.append(future)
+
+# Wait for all to complete
+for f in futures:
+    f.result()
+print(f"Published {len(futures)} messages in batches")
+
+
+# === Publishing with ordering key (guaranteed order) ===
+publisher = pubsub_v1.PublisherClient(
+    publisher_options=pubsub_v1.types.PublisherOptions(
+        enable_message_ordering=True,
+    ),
+)
+# All messages with same ordering_key are delivered in order
+publisher.publish(
+    topic_path,
+    b'{"step": 1}',
+    ordering_key="user-42",   # ← all user-42 events arrive in order
+)
+publisher.publish(
+    topic_path,
+    b'{"step": 2}',
+    ordering_key="user-42",
+)
+```
+
+**Subscribing — Pull vs Push:**
+
+```python
+# === Pull mode (your service pulls messages) ===
+from google.cloud import pubsub_v1
+from concurrent.futures import TimeoutError
+
 subscriber = pubsub_v1.SubscriberClient()
 subscription_path = subscriber.subscription_path("my-project", "order-processor")
 
-def callback(message):
+def callback(message: pubsub_v1.subscriber.message.Message):
+    """Process each message."""
     data = json.loads(message.data.decode())
     print(f"Processing order: {data['order_id']}")
-    message.ack()  # acknowledge — message won't be redelivered
+    
+    # Access attributes (metadata)
+    event_type = message.attributes.get("event_type")
+    print(f"Event type: {event_type}")
+    
+    # ACK = success → message won't be redelivered
+    message.ack()
+    
+    # NACK = failure → message will be redelivered after ack_deadline
+    # message.nack()
 
-streaming_pull = subscriber.subscribe(subscription_path, callback=callback)
-streaming_pull.result()  # blocks, processing messages
+# Start streaming pull (non-blocking, runs in background thread)
+streaming_pull_future = subscriber.subscribe(
+    subscription_path,
+    callback=callback,
+    flow_control=pubsub_v1.types.FlowControl(
+        max_messages=100,          # max 100 unacked messages at a time
+        max_bytes=10 * 1024 * 1024, # max 10 MB outstanding
+    ),
+)
+print(f"Listening on {subscription_path}...")
+
+try:
+    streaming_pull_future.result(timeout=300)  # listen for 5 minutes
+except TimeoutError:
+    streaming_pull_future.cancel()
+    streaming_pull_future.result()  # wait for clean shutdown
+
+
+# === Synchronous pull (batch pull — useful for cron/batch jobs) ===
+response = subscriber.pull(
+    subscription=subscription_path,
+    max_messages=10,
+)
+ack_ids = []
+for msg in response.received_messages:
+    data = json.loads(msg.message.data.decode())
+    print(f"Got: {data}")
+    ack_ids.append(msg.ack_id)
+
+if ack_ids:
+    subscriber.acknowledge(subscription=subscription_path, ack_ids=ack_ids)
 ```
 
-**Pub/Sub vs AWS:**
+```python
+# === Push mode — Pub/Sub calls YOUR endpoint ===
+# No subscriber code needed — Pub/Sub POSTs to your URL
+
+# Cloud Run / Flask handler for push subscription:
+from flask import Flask, request, jsonify
+import base64, json
+
+app = Flask(__name__)
+
+@app.route("/webhook/orders", methods=["POST"])
+def handle_pubsub():
+    envelope = request.get_json()
+    if not envelope or "message" not in envelope:
+        return "Bad Request", 400
+    
+    # Decode the Pub/Sub message
+    message = envelope["message"]
+    data = json.loads(base64.b64decode(message["data"]).decode())
+    attributes = message.get("attributes", {})
+    message_id = message["messageId"]
+    
+    print(f"Order: {data['order_id']}, type: {attributes.get('event_type')}")
+    
+    # Process the message...
+    
+    # Return 2xx = ACK (message won't be redelivered)
+    # Return 4xx/5xx = NACK (message will be retried)
+    return jsonify({"status": "ok"}), 200
+```
+
+**Pull vs Push — when to use which:**
+
+| Aspect | Pull | Push |
+|--------|------|------|
+| **Who initiates** | Your app pulls from Pub/Sub | Pub/Sub pushes to your endpoint |
+| **Best for** | Long-running workers, batch processing | Cloud Run, Cloud Functions, webhooks |
+| **Scaling** | You control concurrency | Pub/Sub controls concurrency |
+| **Auth** | SA on your app | Pub/Sub sends auth token with each request |
+| **Offline consumers** | Messages queue up (up to 31 days) | Retries with backoff, then DLQ |
+| **Network** | Your app needs access to Pub/Sub API | Your endpoint must be HTTPS publicly reachable |
+
+**Dead Letter Topics (DLQ) — handling poison messages:**
+
+```bash
+# Create a dead letter topic
+gcloud pubsub topics create order-events-dlq
+gcloud pubsub subscriptions create order-events-dlq-sub \
+  --topic=order-events-dlq
+
+# Configure subscription to use DLQ after 5 failed attempts
+gcloud pubsub subscriptions update order-processor \
+  --dead-letter-topic=order-events-dlq \
+  --max-delivery-attempts=5
+
+# Grant Pub/Sub permission to publish to DLQ
+gcloud pubsub topics add-iam-policy-binding order-events-dlq \
+  --member="serviceAccount:service-PROJECT_NUM@gcp-sa-pubsub.iam.gserviceaccount.com" \
+  --role="roles/pubsub.publisher"
+```
+
+```
+Message lifecycle with DLQ:
+  Publish → Topic → Subscription → Consumer tries to process
+    ↓ success → ACK → message removed
+    ↓ failure → NACK → redelivered (retry 1)
+    ↓ failure → NACK → redelivered (retry 2)
+    ↓ ...
+    ↓ failure → NACK → redelivered (retry 5 — max_delivery_attempts)
+    ↓ → forwarded to Dead Letter Topic
+    ↓ → DLQ subscription holds it for manual investigation
+
+  DLQ pattern:
+    1. Monitor DLQ subscription for messages (alert if count > 0)
+    2. Investigate: bad data? bug in consumer? external dependency down?
+    3. Fix the issue
+    4. Replay messages from DLQ back to original topic
+```
+
+**Message filtering — subscribe to a subset of messages:**
+
+```bash
+# Only receive "order.completed" events (filter on attributes)
+gcloud pubsub subscriptions create completed-orders-only \
+  --topic=order-events \
+  --message-filter='attributes.event_type = "order.completed"'
+
+# Complex filters
+gcloud pubsub subscriptions create high-value-orders \
+  --topic=order-events \
+  --message-filter='attributes.event_type = "order.completed" AND attributes.region = "asia-south1"'
+
+# This means:
+#   order-events topic receives ALL order events
+#   completed-orders-only subscription → only order.completed
+#   high-value-orders subscription → only completed + asia-south1
+#   Filtered messages are auto-acknowledged (not charged, not redelivered)
+```
+
+**Exactly-once delivery:**
+
+```bash
+# Enable exactly-once on a subscription
+gcloud pubsub subscriptions create order-processor-exactly-once \
+  --topic=order-events \
+  --enable-exactly-once-delivery
+```
+
+```python
+# With exactly-once, ack failures raise exceptions
+def callback(message):
+    data = json.loads(message.data.decode())
+    process_order(data)
+    
+    try:
+        message.ack()
+    except Exception as e:
+        # Ack failed — another consumer may have acked first
+        # This means the message was already processed
+        print(f"Ack failed (already processed): {e}")
+```
+
+```
+Exactly-once vs At-least-once:
+
+  At-least-once (default):
+    - Message delivered 1+ times (rare duplicates possible)
+    - Cheaper, faster, higher throughput
+    - YOU handle deduplication (idempotency key in DB)
+    - Use for: most workloads
+    
+  Exactly-once:
+    - Pub/Sub guarantees no duplicates
+    - Higher latency, lower throughput
+    - Ack must succeed within ack_deadline or message redelivered
+    - Use for: financial transactions, billing, inventory updates
+    
+  Interview tip: "I'd use at-least-once with idempotency keys in the
+  consumer (check message_id before processing). Exactly-once adds
+  latency and is only worth it when deduplication is truly critical."
+```
+
+**Retry policy and backoff:**
+
+```bash
+# Configure retry with exponential backoff
+gcloud pubsub subscriptions update order-processor \
+  --min-retry-delay=10s \
+  --max-retry-delay=600s    # 10 min max between retries
+  
+# How it works:
+#   NACK → wait 10s → retry
+#   NACK → wait 20s → retry
+#   NACK → wait 40s → retry
+#   ...doubles each time up to 600s max
+#   After max_delivery_attempts → DLQ
+```
+
+**Schema validation — enforce message structure:**
+
+```bash
+# Create a schema
+gcloud pubsub schemas create order-schema \
+  --type=AVRO \
+  --definition='{
+    "type": "record",
+    "name": "Order",
+    "fields": [
+      {"name": "order_id", "type": "string"},
+      {"name": "amount", "type": "double"},
+      {"name": "status", "type": {"type": "enum", "name": "Status",
+        "symbols": ["PENDING", "COMPLETED", "CANCELLED"]}}
+    ]
+  }'
+
+# Attach schema to topic — invalid messages are REJECTED at publish time
+gcloud pubsub topics create validated-orders \
+  --schema=order-schema \
+  --message-encoding=JSON
+```
+
+**Monitoring Pub/Sub — key metrics:**
+
+```
+Critical metrics to monitor:
+
+  subscription/oldest_unacked_message_age
+    → How long the oldest message has been waiting
+    → Alert if > 5 minutes (consumer is falling behind)
+    
+  subscription/num_undelivered_messages
+    → Backlog size (messages waiting to be processed)
+    → Alert if growing continuously (consumer can't keep up)
+    
+  subscription/dead_letter_message_count
+    → Messages sent to DLQ
+    → Alert if > 0 (something is failing!)
+    
+  topic/send_request_count
+    → Publishing rate (messages/sec)
+    → Track for capacity planning
+```
+
+**Pub/Sub vs Kafka vs RabbitMQ:**
+
+| Feature | Pub/Sub | Kafka | RabbitMQ |
+|---------|---------|-------|----------|
+| **Managed** | ✅ Fully (serverless) | ❌ Self-manage or Confluent Cloud | ❌ Self-manage or CloudAMQP |
+| **Ordering** | Per ordering key | Per partition | Per queue |
+| **Replay** | ❌ Seek to timestamp only | ✅ Any offset | ❌ No replay |
+| **Consumer groups** | Multiple subscriptions | Consumer groups | Competing consumers |
+| **Throughput** | Auto-scales | Very high (partitions) | Medium |
+| **Retention** | 7 days (max 31) | Unlimited (configurable) | Until consumed |
+| **Exactly-once** | ✅ Optional | ✅ Idempotent producer | ❌ At-least-once |
+| **Best for** | GCP microservices, event-driven | High-throughput streaming, event sourcing | Task queues, RPC |
+| **AWS equiv.** | SQS + SNS | MSK (Managed Kafka) | Amazon MQ |
+
+**Pub/Sub vs AWS equivalents (detailed):**
 
 | Pub/Sub Feature | AWS Equivalent |
 |----------------|---------------|
 | Topic | SNS Topic |
-| Pull Subscription | SQS Queue |
-| Push Subscription | SNS → HTTP endpoint |
-| Dead Letter Topic | DLQ |
+| Pull Subscription | SQS Queue subscribed to SNS |
+| Push Subscription | SNS → HTTP/HTTPS endpoint |
+| Dead Letter Topic | SQS DLQ |
 | Message Ordering | SQS FIFO |
 | Exactly-once delivery | SQS FIFO exactly-once |
-| Schema validation | EventBridge Schema Registry |
+| Message Filtering | SNS Message Filtering / SQS Filter Policies |
+| Schema Validation | EventBridge Schema Registry |
+| Seek (replay from timestamp) | ❌ N/A (SQS doesn't support) |
+
+**Common Pub/Sub patterns:**
+
+```
+1. Fan-out (one event → multiple consumers):
+   Order Topic → Subscription A (email service)
+               → Subscription B (analytics service)
+               → Subscription C (inventory service)
+   Each gets ALL messages independently.
+
+2. Load balancing (one subscription → multiple workers):
+   Order Topic → Subscription A → Worker 1, Worker 2, Worker 3
+   Each message goes to ONE worker (competing consumers).
+
+3. Event sourcing:
+   All state changes published to Pub/Sub
+   → Subscription 1: Update read model (CQRS)
+   → Subscription 2: Stream to BigQuery for analytics
+   → Subscription 3: Trigger notifications
+
+4. Request buffering (absorb traffic spikes):
+   API → publish to Pub/Sub → workers pull at their own pace
+   API responds immediately (async). Workers process in background.
+   Handles 10x traffic spikes without overloading the backend.
+```
 
 ---
 
@@ -22705,28 +25799,294 @@ gcloud functions deploy hello-world \
 
 ### 23.10 Cloud CDN, Cloud DNS & Load Balancing — Networking
 
-> **📣 Definition:** _"GCP's networking stack: Cloud Load Balancing (global L7/L4, anycast IP), Cloud CDN (cache at edge), Cloud DNS (managed DNS). Key advantage: GCP's load balancer is truly global — single anycast IP routes to nearest healthy backend worldwide, vs AWS ALB which is regional."_
+> **📣 Definition:** _"GCP's networking stack: Cloud Load Balancing (global L7/L4, single anycast IP), Cloud CDN (edge caching), Cloud DNS (managed DNS), Cloud Armor (WAF + DDoS protection), Cloud NAT (outbound internet for private VMs). Key advantage: GCP's load balancer is truly global — one anycast IP routes to the nearest healthy backend worldwide. AWS needs ALB per region + Route 53 latency routing to achieve the same."_
+
+**Cloud Load Balancing — types and when to use each:**
 
 ```
-GCP Global Load Balancing (unique to GCP):
-  Single anycast IP address → works worldwide
+GCP Load Balancer types:
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │ External (internet-facing):                                 │
+  │   Global HTTP(S) LB        → L7, anycast IP, SSL, URL map  │
+  │   Global SSL Proxy LB      → L4 (TCP+SSL), non-HTTP        │
+  │   Global TCP Proxy LB      → L4 (TCP), non-HTTP            │
+  │   Regional External LB     → L4, TCP/UDP, single region    │
+  │                                                             │
+  │ Internal (VPC-only):                                        │
+  │   Internal HTTP(S) LB      → L7, for internal microservices│
+  │   Internal TCP/UDP LB      → L4, for internal services     │
+  │   Internal Regional LB     → L4, for HA within VPC         │
+  └─────────────────────────────────────────────────────────────┘
+
+  Decision flow:
+    HTTP/HTTPS traffic? → Global HTTP(S) LB (always)
+    TCP (non-HTTP)?     → Global TCP Proxy or Regional External
+    Internal services?  → Internal HTTP(S) or Internal TCP/UDP
+    UDP traffic?        → Regional External (global doesn't support UDP)
+```
+
+**Global HTTP(S) Load Balancer — full setup:**
+
+```bash
+# === Step-by-step: Set up Global HTTP(S) LB ===
+
+# 1. Health check
+gcloud compute health-checks create http api-health-check \
+  --port=8000 \
+  --request-path=/health \
+  --check-interval=10 \
+  --timeout=5 \
+  --healthy-threshold=2 \
+  --unhealthy-threshold=3
+
+# 2. Backend service (connects backends + health check)
+gcloud compute backend-services create api-backend \
+  --protocol=HTTP \
+  --port-name=http \
+  --health-checks=api-health-check \
+  --enable-cdn \                    # enable Cloud CDN (optional)
+  --global
+
+# 3. Add instance group (or NEG) to backend
+gcloud compute backend-services add-backend api-backend \
+  --instance-group=api-group \
+  --instance-group-zone=asia-south1-a \
+  --balancing-mode=UTILIZATION \
+  --max-utilization=0.8 \
+  --global
+
+# Add a second region for multi-region HA!
+gcloud compute backend-services add-backend api-backend \
+  --instance-group=api-group-us \
+  --instance-group-zone=us-central1-a \
+  --balancing-mode=UTILIZATION \
+  --max-utilization=0.8 \
+  --global
+
+# 4. URL map (route rules — like NGINX location blocks)
+gcloud compute url-maps create api-lb \
+  --default-service=api-backend
+
+# Advanced: path-based routing
+gcloud compute url-maps add-path-matcher api-lb \
+  --path-matcher-name=api-routes \
+  --default-service=api-backend \
+  --path-rules="/api/v1/*=api-backend,/static/*=cdn-backend"
+
+# 5. SSL certificate (managed — auto-renewed!)
+gcloud compute ssl-certificates create api-cert \
+  --domains=api.myapp.com,www.myapp.com \
+  --global
+
+# 6. Target HTTPS proxy
+gcloud compute target-https-proxies create api-proxy \
+  --url-map=api-lb \
+  --ssl-certificates=api-cert
+
+# 7. Forwarding rule (the actual IP + port)
+gcloud compute forwarding-rules create api-frontend \
+  --global \
+  --target-https-proxy=api-proxy \
+  --ports=443
+
+# Done! Get the IP:
+gcloud compute forwarding-rules describe api-frontend --global \
+  --format="get(IPAddress)"
+# → 34.120.xxx.xxx (single anycast IP, serves globally!)
+```
+
+**Cloud CDN — edge caching:**
+
+```bash
+# Enable CDN on backend service
+gcloud compute backend-services update api-backend \
+  --enable-cdn \
+  --global
+
+# Cache policy configuration
+gcloud compute backend-services update api-backend \
+  --cache-mode=CACHE_ALL_STATIC \     # auto-cache static content
+  # --cache-mode=USE_ORIGIN_HEADERS \ # respect Cache-Control headers
+  # --cache-mode=FORCE_CACHE_ALL \    # cache everything (careful!)
+  --default-ttl=3600 \                # 1 hour default
+  --max-ttl=86400 \                   # 24 hours max
+  --client-ttl=300 \                  # 5 min browser cache
+  --global
+
+# Cache invalidation (clear CDN cache)
+gcloud compute url-maps invalidate-cdn-cache api-lb \
+  --path="/static/*"                  # invalidate all static assets
+  # --path="/"                        # invalidate everything
+
+# Signed URLs/cookies for CDN (protect premium content)
+gcloud compute backend-services update api-backend \
+  --signed-url-cache-max-age=3600 \
+  --global
+gcloud compute sign-url \
+  "https://api.myapp.com/premium/video.mp4" \
+  --key-name=cdn-key \
+  --key-file=cdn-key.json \
+  --expires-in=1h
+```
+
+```
+CDN cache behavior:
+  Request → CDN Edge → Cache HIT? → Return cached response (fast!)
+                     → Cache MISS? → Forward to backend → Cache response
   
-  User in Mumbai  ──→ ┐
-  User in London  ──→ ├──→  Global LB  ──→  Nearest healthy backend
-  User in New York ──→ ┘     (1 IP)         (auto-selected region)
+  What gets cached:
+    ✅ Static files (CSS, JS, images, fonts) — automatic
+    ✅ API responses with Cache-Control headers
+    ❌ POST/PUT/DELETE requests — never cached
+    ❌ Responses with Set-Cookie — never cached
+    
+  Edge locations: 100+ worldwide (Mumbai, Singapore, Frankfurt, etc.)
+  Latency improvement: 100-300ms → 5-20ms for cached content
+```
+
+**Cloud DNS — managed DNS:**
+
+```bash
+# Create a DNS zone
+gcloud dns managed-zones create myapp-zone \
+  --dns-name=myapp.com. \
+  --description="Production DNS" \
+  --visibility=public
+
+# Add DNS records
+# A record — point domain to load balancer IP
+gcloud dns record-sets create api.myapp.com. \
+  --zone=myapp-zone \
+  --type=A \
+  --ttl=300 \
+  --rrdatas=34.120.xxx.xxx
+
+# CNAME — alias for Cloud Run / App Engine
+gcloud dns record-sets create app.myapp.com. \
+  --zone=myapp-zone \
+  --type=CNAME \
+  --ttl=300 \
+  --rrdatas=ghs.googlehosted.com.
+
+# MX records (email)
+gcloud dns record-sets create myapp.com. \
+  --zone=myapp-zone \
+  --type=MX \
+  --ttl=300 \
+  --rrdatas="10 mail.myapp.com."
+
+# Private DNS zone (internal resolution within VPC)
+gcloud dns managed-zones create internal-zone \
+  --dns-name=internal.myapp.com. \
+  --visibility=private \
+  --networks=my-vpc
+# → VMs in my-vpc can resolve db.internal.myapp.com → 10.0.1.5
+
+# DNSSEC (DNS Security Extensions)
+gcloud dns managed-zones update myapp-zone --dnssec-state=on
+```
+
+**Cloud Armor — WAF & DDoS protection:**
+
+```bash
+# Create a security policy
+gcloud compute security-policies create api-waf-policy \
+  --description="API WAF policy"
+
+# Block specific IP ranges
+gcloud compute security-policies rules create 1000 \
+  --security-policy=api-waf-policy \
+  --action=deny-403 \
+  --src-ip-ranges="198.51.100.0/24,203.0.113.0/24" \
+  --description="Block known bad IPs"
+
+# Rate limiting (prevent abuse)
+gcloud compute security-policies rules create 2000 \
+  --security-policy=api-waf-policy \
+  --action=rate-based-ban \
+  --rate-limit-threshold-count=100 \        # 100 requests...
+  --rate-limit-threshold-interval-sec=60 \  # ...per 60 seconds
+  --ban-duration-sec=600 \                  # ban for 10 minutes
+  --conform-action=allow \
+  --exceed-action=deny-429 \
+  --enforce-on-key=IP \
+  --description="Rate limit: 100 req/min per IP"
+
+# Block SQL injection & XSS (OWASP rules)
+gcloud compute security-policies rules create 3000 \
+  --security-policy=api-waf-policy \
+  --action=deny-403 \
+  --expression="evaluatePreconfiguredExpr('sqli-v33-stable') || evaluatePreconfiguredExpr('xss-v33-stable')" \
+  --description="Block SQLi and XSS"
+
+# Geo-blocking (restrict to specific countries)
+gcloud compute security-policies rules create 4000 \
+  --security-policy=api-waf-policy \
+  --action=deny-403 \
+  --expression="origin.region_code != 'IN' && origin.region_code != 'US'" \
+  --description="Allow only India and US"
+
+# Attach policy to backend service
+gcloud compute backend-services update api-backend \
+  --security-policy=api-waf-policy \
+  --global
+```
+
+**Cloud NAT — outbound internet for private VMs:**
+
+```bash
+# Create Cloud Router (required for Cloud NAT)
+gcloud compute routers create nat-router \
+  --network=my-vpc \
+  --region=asia-south1
+
+# Create Cloud NAT
+gcloud compute routers nats create nat-config \
+  --router=nat-router \
+  --region=asia-south1 \
+  --auto-allocate-nat-external-ips \
+  --nat-all-subnet-ip-ranges \           # NAT for all subnets
+  --min-ports-per-vm=64 \
+  --max-ports-per-vm=4096 \
+  --tcp-established-idle-timeout=1200 \   # 20 min
+  --log-filter=ERRORS_ONLY
+
+# Now ALL private VMs can reach the internet without public IPs
+# Cloud NAT is regional and fully managed (vs AWS NAT Gateway per AZ)
+```
+
+**Network Service Tiers:**
+
+```
+Premium tier (default):
+  Traffic goes through Google's private fiber backbone
+  → Low latency, high reliability
+  → Global LB with anycast
+  → Cost: higher per-GB egress
+
+Standard tier:
+  Traffic goes through public internet (like AWS)
+  → Higher latency, lower cost
+  → Regional LB only (no global anycast)
+  → Cost: ~30% cheaper egress
   
-  AWS requires ALB per region + Route 53 latency routing
-  GCP does it with ONE load balancer
+  gcloud compute addresses create regional-ip \
+    --region=asia-south1 \
+    --network-tier=STANDARD
 ```
 
 | GCP | AWS Equivalent |
 |-----|---------------|
-| Global HTTP(S) Load Balancer | ALB + Route 53 (multi-region) |
+| Global HTTP(S) LB | ALB + Route 53 (multi-region) |
 | Regional TCP/UDP LB | NLB |
+| Internal HTTP(S) LB | Internal ALB |
 | Cloud CDN | CloudFront |
 | Cloud DNS | Route 53 |
-| Cloud Armor (WAF) | AWS WAF |
+| Cloud Armor (WAF) | AWS WAF + Shield |
 | Cloud NAT | NAT Gateway |
+| Network Tiers (Premium) | ❌ No equivalent (AWS always uses public internet) |
+| Managed SSL Certs | ACM (Certificate Manager) |
 
 ---
 
