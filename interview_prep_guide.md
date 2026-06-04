@@ -28726,3 +28726,3783 @@ groups:
 ```
 
 📌 **TLDR:** "Three pillars: Logs (structlog, JSON format), Metrics (Prometheus counters/histograms/gauges), Traces (OpenTelemetry spans). Four golden signals: latency, traffic, errors, saturation. Use OTEL for vendor-neutral instrumentation. Prometheus + Grafana for dashboards. Alert on symptoms (error rate, latency), not causes (CPU). Always include request_id for log correlation."
+
+
+---
+
+
+## 27. Frontend Development — JavaScript, React, Vue & Angular
+
+> This section is designed for **backend developers** who need to confidently discuss frontend concepts in Technical Architect / Full-Stack interviews. It covers core JavaScript, web platform fundamentals, and deep dives into the three major frameworks.
+
+---
+
+### 27.0 Frontend from Zero — A Backend Developer's Guide
+
+> **📣 If you're reading this as a Python/backend developer**, this section explains every frontend concept from scratch, using analogies you already understand. Read this FIRST before diving into frameworks.
+
+#### What IS "Frontend"?
+
+```
+In your backend world, you write Python code that runs on a SERVER.
+In frontend, you write code that runs in the USER'S BROWSER.
+
+  Backend (what you know):
+    User sends HTTP request → your Python/Django code runs on YOUR server
+    → returns a response (JSON, HTML)
+
+  Frontend (what you're learning):
+    Your server sends HTML + CSS + JavaScript files to the browser
+    → the BROWSER executes the JavaScript on the USER'S machine
+    → JavaScript manipulates what the user sees, handles clicks, fetches data
+
+  Think of it this way:
+    Backend = the kitchen (prepares food, user never sees it)
+    Frontend = the restaurant dining room (what the user interacts with)
+```
+
+#### HTML, CSS, JavaScript — The Three Pillars
+
+```
+Every web page is made of exactly THREE technologies:
+
+  HTML  = the STRUCTURE  (what things are)
+  CSS   = the STYLE      (how things look)
+  JS    = the BEHAVIOR   (what things do)
+
+  Python analogy:
+    HTML  ≈  your data models / database schema
+              (defines WHAT exists: a heading, a paragraph, a button, a form)
+    CSS   ≈  a config file for appearance
+              (defines HOW things look: colors, sizes, spacing, layout)
+    JS    ≈  your Python code / business logic
+              (defines WHAT HAPPENS: when user clicks, fetch data, show/hide)
+
+  Example — a simple login form:
+    HTML:  "There is a form with an email input, password input, and a button"
+    CSS:   "The button is blue, rounded, 200px wide, with a shadow"
+    JS:    "When the button is clicked, validate inputs and send data to API"
+```
+
+```html
+<!-- This is HTML — it defines WHAT exists on the page -->
+<div class="login-form">
+    <h1>Welcome Back</h1>                  <!-- heading -->
+    <input type="email" id="email" />      <!-- text input -->
+    <input type="password" id="password" />
+    <button onclick="handleLogin()">       <!-- button that calls JS -->
+        Log In
+    </button>
+    <p id="error" style="display:none">    <!-- hidden error message -->
+        Invalid credentials
+    </p>
+</div>
+```
+
+```css
+/* This is CSS — it defines HOW things LOOK */
+.login-form {
+    width: 400px;
+    margin: 0 auto;        /* center horizontally */
+    padding: 20px;
+    background: #1a1a2e;   /* dark background */
+    border-radius: 12px;   /* rounded corners */
+}
+
+button {
+    background: #4361ee;   /* blue */
+    color: white;
+    padding: 12px 24px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;       /* hand icon on hover */
+}
+
+button:hover {
+    background: #3a56d4;   /* darker blue when mouse hovers */
+}
+```
+
+```javascript
+// This is JavaScript — it defines WHAT HAPPENS
+async function handleLogin() {
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+
+    // Call your Python backend API (just like requests.post in Python!)
+    const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+    });
+
+    if (response.ok) {
+        window.location.href = "/dashboard";  // redirect
+    } else {
+        document.getElementById("error").style.display = "block";  // show error
+    }
+}
+```
+
+#### What Is the DOM?
+
+```
+DOM (Document Object Model) = the browser's LIVE representation of your HTML
+
+  Python analogy:
+    HTML file   ≈  a .py source file (static text)
+    DOM         ≈  the running Python objects in memory (live, mutable)
+
+  When the browser loads HTML, it creates a TREE of objects:
+    document
+      └── <html>
+            ├── <head>
+            │     └── <title>My App</title>
+            └── <body>
+                  ├── <h1>Hello</h1>
+                  ├── <p>World</p>
+                  └── <button>Click</button>
+
+  JavaScript can READ and MODIFY the DOM (the live page):
+    document.getElementById("error").style.display = "block"
+    → finds the element with id="error" and makes it visible
+    → the page updates INSTANTLY — no page reload needed!
+
+  This is the KEY difference from server-rendered pages:
+    Traditional (Django templates): change data → reload entire page
+    JavaScript DOM manipulation:    change data → update just that element
+```
+
+#### What Is a "Component"?
+
+```
+Component = a REUSABLE, SELF-CONTAINED piece of UI
+
+  Python analogy:
+    Component ≈ a Python CLASS that encapsulates:
+      - its own data (state)
+      - its own template (what it renders)
+      - its own logic (event handlers)
+
+  WITHOUT components (vanilla HTML — like writing all code in one file):
+    One massive HTML file with 3,000 lines
+    Login form HTML at line 45, its CSS at line 890, its JS at line 2100
+    Want to reuse the same button style? Copy-paste everywhere
+    Change the button? Find and update 47 places
+
+  WITH components (like having separate Python classes/modules):
+    <LoginForm />      ← renders a complete login form
+    <UserCard />       ← renders a user profile card
+    <Navbar />         ← renders the navigation bar
+    <Button />         ← renders a styled button (reused everywhere!)
+
+  Components NEST just like Python function calls:
+    <App>
+        <Navbar />
+        <Dashboard>
+            <Sidebar />
+            <UserCard user={alice} />     ← same component, different data
+            <UserCard user={bob} />       ← reuse!
+        </Dashboard>
+    </App>
+
+  Every framework (React, Vue, Angular) is built around components.
+  They just differ in HOW you write them.
+```
+
+#### What Is "State"?
+
+```
+State = DATA that can CHANGE over time and CAUSES the UI to update
+
+  Python analogy:
+    state ≈ instance variables in a Python class
+    BUT with a crucial difference: when state changes, the UI RE-RENDERS
+
+  In Python:
+    self.count = 0
+    self.count += 1    # just changes the variable, nothing else happens
+
+  In Frontend:
+    const [count, setCount] = useState(0)  // React
+    setCount(count + 1)                     // changes variable AND re-renders UI
+
+  Types of state:
+    Local state:   lives in ONE component (e.g., "is this dropdown open?")
+    Global state:  shared across MANY components (e.g., "who is logged in?")
+    Server state:  data from your API (e.g., "list of users from database")
+    URL state:     data in the URL (e.g., /users?page=3&sort=name)
+
+  The ENTIRE point of frontend frameworks is:
+    "When state changes, automatically update the UI to reflect it"
+    Without frameworks, you'd manually find and update each DOM element
+    With frameworks, you just change the state and the UI updates itself
+```
+
+#### What Is a Single-Page Application (SPA)?
+
+```
+Traditional Web (what Django/Flask does by default):
+  Click a link → browser sends request to server → server returns NEW HTML page
+  → browser REPLACES entire page → full page reload (white flash)
+
+  /home     → server returns home.html
+  /about    → server returns about.html    (full page reload!)
+  /users    → server returns users.html    (full page reload!)
+
+SPA (what React/Vue/Angular build):
+  Server sends ONE HTML file + a big JavaScript bundle (ONCE)
+  Click a link → JavaScript INTERCEPTS the click
+  → JavaScript updates the page content WITHOUT a full reload
+  → URL changes (browser history works), but no server round-trip for HTML
+
+  /home     → JS shows Home component      (instant, no reload!)
+  /about    → JS shows About component     (instant, no reload!)
+  /users    → JS shows Users component + fetches data from API
+
+  Python analogy:
+    Traditional = Django views returning render(request, 'template.html')
+    SPA         = a desktop app (like Spotify) that happens to run in a browser
+                  only talks to the server for DATA (JSON), not for pages
+
+  Pros: fast navigation, app-like feel, rich interactions
+  Cons: slow initial load (big JS bundle), SEO challenges, complexity
+```
+
+#### Why Frameworks? Why Not Just HTML + CSS + JS?
+
+```
+You CAN build everything with vanilla JavaScript. But at scale, you'll
+write the same patterns over and over AND make bugs. Frameworks solve:
+
+  Problem 1: Keeping UI in sync with data
+    Vanilla JS:  data changes → manually find every DOM element → update each one
+    Framework:   data changes → framework automatically re-renders the right parts
+
+  Problem 2: Organizing code
+    Vanilla JS:  one big file, or your own ad-hoc file structure
+    Framework:   components with clear boundaries, lifecycle, and data flow
+
+  Problem 3: Reusability
+    Vanilla JS:  copy-paste HTML/JS, or build your own template system
+    Framework:   <UserCard user={data} /> — done, works everywhere
+
+  Problem 4: Performance
+    Vanilla JS:  every DOM change → browser reflows entire page (slow)
+    Framework:   batches changes, virtual DOM diff, only updates what changed
+
+  Python analogy:
+    "Why use Django instead of raw WSGI?"
+    Same answer: routing, ORM, templates, middleware, admin — all solved for you
+    Frameworks are the Django of the frontend world
+```
+
+#### What Are Node.js, npm, and Build Tools?
+
+```
+As a Python developer, you know pip and virtualenv. Frontend has equivalents:
+
+  ┌─────────────────┬───────────────────────────────────┐
+  │ Python          │ Frontend (JavaScript)             │
+  ├─────────────────┼───────────────────────────────────┤
+  │ Python runtime  │ Node.js (JS runtime for servers)  │
+  │ pip             │ npm / yarn / pnpm                 │
+  │ requirements.txt│ package.json                      │
+  │ virtualenv      │ node_modules/ (per-project)       │
+  │ PyPI            │ npmjs.com                         │
+  │ pytest          │ Jest / Vitest                     │
+  │ black / ruff    │ ESLint / Prettier                 │
+  │ setup.py        │ vite.config.js / webpack.config   │
+  └─────────────────┴───────────────────────────────────┘
+
+  Node.js: lets you run JavaScript OUTSIDE the browser (like Python)
+           Used for: dev tools, build scripts, server-side rendering
+           You DON'T need Node.js knowledge for frontend — it's just the tooling
+
+  npm: "pip for JavaScript"
+       npm install react    ≈    pip install django
+       package.json         ≈    requirements.txt
+
+  Build tools (Vite, Webpack): convert your source code into optimized files
+       Why? Browsers can't understand: .jsx, .vue, .ts, import from 'react'
+       Build tool: compiles TypeScript → JS, bundles files, minifies code
+       Python analogy: like compiling Cython or building a Docker image
+```
+
+#### Frontend ↔ Backend Mental Model
+
+```
+Mapping concepts you KNOW to frontend concepts:
+
+  ┌────────────────────────┬──────────────────────────────────────┐
+  │ Backend (Python)       │ Frontend (JavaScript)                │
+  ├────────────────────────┼──────────────────────────────────────┤
+  │ Django view / endpoint │ Component (renders a piece of UI)    │
+  │ Template context data  │ Props (data passed to component)     │
+  │ Session / DB state     │ State (reactive data in component)   │
+  │ Django template        │ JSX / Vue template / Angular template│
+  │ Template inheritance   │ Component composition (nesting)      │
+  │ Django signals         │ Events / callbacks / emitters        │
+  │ Middleware             │ Route guards / interceptors          │
+  │ Django REST Framework  │ API consumed by fetch() / axios      │
+  │ Celery background task │ Web Worker / Service Worker          │
+  │ Redis cache            │ Browser cache / localStorage         │
+  │ Jinja2 {% if %}        │ {condition && <div>} / v-if / @if    │
+  │ Jinja2 {% for %}       │ {list.map()} / v-for / @for          │
+  │ Django Admin           │ No equivalent (you build everything) │
+  └────────────────────────┴──────────────────────────────────────┘
+
+  The key mental shift:
+    Backend: "I receive a request, process it, return a response. Done."
+    Frontend: "I render UI, WAIT for user interaction, react to it,
+              update the UI, maybe call the API, update again..."
+    
+    Backend is REQUEST → RESPONSE (one-shot)
+    Frontend is an ONGOING LOOP (event-driven, like a game engine)
+```
+
+📌 **TLDR:** "Frontend = code that runs in the browser. HTML = structure, CSS = style, JS = behavior. DOM = live tree of HTML elements that JS can modify. Components = reusable UI pieces (like Python classes). State = data that auto-updates the UI when changed. SPA = one page, JS swaps content (no reloads). Frameworks (React/Vue/Angular) solve: data→UI sync, code organization, reusability. npm = pip, package.json = requirements.txt, Node.js = just the tooling runtime."
+
+---
+
+### 27.1 JavaScript Fundamentals — The Language Itself
+
+> **📣 Why this matters:** _"JavaScript is the foundation — no matter which framework you use (React, Vue, Angular), interviewers will drill you on core JS. If you can't explain closures, the event loop, or `this`, you won't pass a frontend interview."_
+
+#### `var` vs `let` vs `const` — and Hoisting
+
+```javascript
+// === var — function-scoped, hoisted, dangerous ===
+console.log(x);  // undefined (hoisted, initialized to undefined)
+var x = 10;
+
+// var is function-scoped (NOT block-scoped!)
+if (true) {
+    var leaked = "I'm visible outside this block!";
+}
+console.log(leaked);  // "I'm visible outside this block!" ← bug-prone!
+
+// === let — block-scoped, hoisted but NOT initialized ===
+console.log(y);  // ❌ ReferenceError: Cannot access 'y' before initialization
+let y = 20;      // This is the "Temporal Dead Zone" (TDZ)
+
+if (true) {
+    let blockScoped = "I stay inside this block";
+}
+// console.log(blockScoped);  // ❌ ReferenceError
+
+// === const — block-scoped, must be initialized, can't be reassigned ===
+const PI = 3.14;
+// PI = 3.15;  // ❌ TypeError: Assignment to constant variable
+
+// BUT: const objects/arrays CAN be mutated!
+const user = { name: "Tushar" };
+user.name = "Updated";   // ✅ This works! const prevents reassignment, not mutation
+// user = {};             // ❌ TypeError: Assignment to constant variable
+
+// === The classic interview gotcha: var in loops ===
+for (var i = 0; i < 3; i++) {
+    setTimeout(() => console.log(i), 100);
+}
+// Output: 3, 3, 3  ← because `var` is function-scoped, all callbacks share the same `i`
+
+for (let j = 0; j < 3; j++) {
+    setTimeout(() => console.log(j), 100);
+}
+// Output: 0, 1, 2  ← `let` creates a new binding per iteration
+```
+
+```
+Hoisting — what actually happens during compilation:
+
+  JavaScript processes code in 2 phases:
+  1. Creation Phase: declarations are "hoisted" to the top
+  2. Execution Phase: code runs line by line
+
+  var:       hoisted + initialized to `undefined`
+  let/const: hoisted but NOT initialized → "Temporal Dead Zone" (TDZ)
+  function declarations: fully hoisted (you can call before definition)
+  function expressions (const fn = () => {}): NOT hoisted
+
+  Rule of thumb: Always use `const` by default, `let` when you need
+  to reassign, NEVER use `var` in modern code.
+```
+
+#### Closures — Functions That Remember
+
+> **📣 Definition:** _"A closure is a function that 'remembers' the variables from its outer scope even after the outer function has finished executing. It captures the lexical environment."_
+
+```javascript
+// === Closure basics — the function "remembers" outer scope ===
+function createCounter() {
+    let count = 0;  // private variable — not accessible from outside
+    return {
+        increment() { return ++count; },
+        decrement() { return --count; },
+        getCount() { return count; },
+    };
+}
+
+const counter = createCounter();
+counter.increment();  // 1
+counter.increment();  // 2
+counter.getCount();   // 2
+// count is NOT accessible directly — it's "closed over" by the returned functions
+
+// === Data privacy / encapsulation ===
+function createUser(name) {
+    let loginCount = 0;
+    return {
+        getName: () => name,
+        login() {
+            loginCount++;
+            return `${name} logged in (${loginCount} times)`;
+        },
+    };
+}
+
+// === Function factory (configurable functions) ===
+function multiply(factor) {
+    return (number) => number * factor;  // `factor` is captured via closure
+}
+const double = multiply(2);
+const triple = multiply(3);
+double(5);  // 10
+triple(5);  // 15
+
+// === The classic interview gotcha (closure + var) ===
+for (var i = 0; i < 3; i++) {
+    setTimeout(function() {
+        console.log(i);  // 3, 3, 3 — all closures share the same `i`
+    }, 100);
+}
+// Fix 1: Use `let` (creates new binding per iteration)
+// Fix 2: Use IIFE to create new scope
+for (var i = 0; i < 3; i++) {
+    (function(j) {  // IIFE creates a new scope with `j`
+        setTimeout(function() {
+            console.log(j);  // 0, 1, 2
+        }, 100);
+    })(i);
+}
+```
+
+#### The `this` Keyword — Context Matters
+
+```javascript
+// `this` depends on HOW a function is called, not WHERE it's defined
+
+// 1. Global context
+console.log(this);  // In browser: `window`. In Node: `global` (or `{}` in modules)
+
+// 2. Object method — `this` = the object
+const user = {
+    name: "Tushar",
+    greet() {
+        console.log(`Hello, ${this.name}`);  // "Hello, Tushar"
+    },
+};
+user.greet();  // ✅ `this` = user
+
+// 3. Lost context (common bug!)
+const greetFn = user.greet;
+greetFn();  // "Hello, undefined" — `this` is now `window` (or `undefined` in strict mode)
+
+// 4. Arrow functions — `this` is lexically bound (inherits from parent)
+const user2 = {
+    name: "Tushar",
+    greet: () => {
+        console.log(`Hello, ${this.name}`);  // ❌ "Hello, undefined"
+        // Arrow functions DON'T have their own `this`!
+    },
+    delayedGreet() {
+        setTimeout(() => {
+            console.log(`Hello, ${this.name}`);  // ✅ "Hello, Tushar"
+            // Arrow function inherits `this` from `delayedGreet`
+        }, 100);
+    },
+};
+
+// 5. bind / call / apply — explicitly set `this`
+function introduce(greeting) {
+    console.log(`${greeting}, I'm ${this.name}`);
+}
+introduce.call({ name: "Tushar" }, "Hi");     // "Hi, I'm Tushar" (args individually)
+introduce.apply({ name: "Tushar" }, ["Hi"]);  // "Hi, I'm Tushar" (args as array)
+const bound = introduce.bind({ name: "Tushar" });  // returns new function
+bound("Hey");  // "Hey, I'm Tushar"
+
+// 6. Class context — `this` = the instance
+class Timer {
+    count = 0;
+    start() {
+        // ❌ BUG: setTimeout uses a regular function, loses `this`
+        // setTimeout(function() { this.count++; }, 1000);
+
+        // ✅ FIX: Use arrow function
+        setInterval(() => { this.count++; }, 1000);
+    }
+}
+```
+
+```
+Interview answer for "Explain `this` in JavaScript":
+  "this depends on how a function is called:
+   - Object method:     this = the object
+   - Regular function:  this = window (or undefined in strict mode)
+   - Arrow function:    this = inherited from enclosing scope (lexical)
+   - bind/call/apply:   this = whatever you pass
+   - Class constructor: this = the new instance
+   - Event handler:     this = the element (DOM)
+   Arrow functions are the #1 fix for 'lost this' bugs."
+```
+
+#### Prototypal Inheritance — How Objects Inherit
+
+```javascript
+// JavaScript uses PROTOTYPAL inheritance (not classical like Java/Python)
+// Every object has a hidden [[Prototype]] link to another object
+
+// === Object.create — pure prototypal inheritance ===
+const animal = {
+    speak() { console.log(`${this.name} makes a sound`); },
+};
+const dog = Object.create(animal);  // dog's prototype → animal
+dog.name = "Rex";
+dog.speak();  // "Rex makes a sound" — found on prototype chain
+
+// === Prototype chain ===
+// dog → animal → Object.prototype → null
+console.log(dog.hasOwnProperty("name"));  // true (own property)
+console.log(dog.hasOwnProperty("speak")); // false (on prototype)
+
+// === ES6 class — syntactic sugar over prototypes ===
+class Animal {
+    constructor(name) {
+        this.name = name;  // own property
+    }
+    speak() {  // goes on Animal.prototype
+        console.log(`${this.name} makes a sound`);
+    }
+}
+
+class Dog extends Animal {
+    constructor(name, breed) {
+        super(name);       // call parent constructor
+        this.breed = breed;
+    }
+    speak() {  // override parent method
+        console.log(`${this.name} barks`);
+    }
+}
+
+const rex = new Dog("Rex", "Labrador");
+rex.speak();  // "Rex barks"
+rex instanceof Dog;     // true
+rex instanceof Animal;  // true
+
+// Under the hood: rex → Dog.prototype → Animal.prototype → Object.prototype → null
+```
+
+#### The Event Loop — How JavaScript Handles Async
+
+> **📣 Definition:** _"JavaScript is single-threaded — it can only execute one thing at a time. The Event Loop is the mechanism that allows it to handle async operations (network requests, timers, user events) without blocking. It coordinates the Call Stack, Microtask Queue, and Macrotask Queue."_
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    JavaScript Runtime                    │
+│                                                          │
+│  ┌──────────────────┐     ┌─────────────────────────┐  │
+│  │   Call Stack      │     │   Web APIs (Browser)     │  │
+│  │   ┌────────────┐ │     │   - setTimeout           │  │
+│  │   │ function() │ │────▶│   - fetch                │  │
+│  │   └────────────┘ │     │   - addEventListener     │  │
+│  │   ┌────────────┐ │     │   - DOM events           │  │
+│  │   │   main()   │ │     └──────────┬──────────────┘  │
+│  │   └────────────┘ │                │                  │
+│  └──────────────────┘                │                  │
+│           ▲                          ▼                  │
+│           │              ┌────────────────────┐         │
+│           │              │   Callback Queues   │         │
+│           │              │                    │         │
+│           │   ┌──────────┤  Microtask Queue   │         │
+│           │   │          │  (Promise.then,    │         │
+│           │   │          │   queueMicrotask)  │         │
+│     Event │   │          │  ← HIGHER PRIORITY │         │
+│      Loop │   │          ├────────────────────┤         │
+│           │   │          │  Macrotask Queue   │         │
+│           └───┘          │  (setTimeout,      │         │
+│                          │   setInterval,     │         │
+│                          │   I/O, DOM events) │         │
+│                          └────────────────────┘         │
+└─────────────────────────────────────────────────────────┘
+
+Event Loop algorithm (simplified):
+  1. Execute everything in Call Stack (synchronous code)
+  2. Call Stack empty? → Drain ENTIRE Microtask Queue
+  3. Microtask Queue empty? → Take ONE task from Macrotask Queue
+  4. After each macrotask → check Microtask Queue again
+  5. Repeat forever
+```
+
+**The classic interview code output question:**
+
+```javascript
+console.log("1");                          // sync — runs immediately
+
+setTimeout(() => console.log("2"), 0);     // macrotask — goes to macrotask queue
+
+Promise.resolve().then(() => console.log("3"));  // microtask — goes to microtask queue
+
+console.log("4");                          // sync — runs immediately
+
+// Output: 1, 4, 3, 2
+// Why?
+//   Step 1: "1" printed (sync)
+//   Step 2: setTimeout callback → macrotask queue
+//   Step 3: Promise.then → microtask queue
+//   Step 4: "4" printed (sync)
+//   Step 5: Call stack empty → drain microtask queue → "3" printed
+//   Step 6: Take from macrotask queue → "2" printed
+```
+
+**More complex output question (interview favorite):**
+
+```javascript
+console.log("start");
+
+setTimeout(() => console.log("timeout1"), 0);
+
+Promise.resolve()
+    .then(() => {
+        console.log("promise1");
+        setTimeout(() => console.log("timeout2"), 0);
+    })
+    .then(() => console.log("promise2"));
+
+setTimeout(() => console.log("timeout3"), 0);
+
+console.log("end");
+
+// Output: start, end, promise1, promise2, timeout1, timeout3, timeout2
+// Explanation:
+//   Sync:       "start", "end"
+//   Microtask:  "promise1" → creates timeout2, "promise2" (chained .then)
+//   Macrotask:  "timeout1" (queued first), "timeout3" (queued second),
+//               "timeout2" (queued during microtask, so it's last)
+```
+
+#### Promises & async/await
+
+```javascript
+// === Promise states ===
+// Pending → Fulfilled (resolved) or Rejected
+// Once settled, cannot change state
+
+// Creating a promise
+const fetchUser = (id) => {
+    return new Promise((resolve, reject) => {
+        setTimeout(() => {
+            if (id > 0) resolve({ id, name: "Tushar" });
+            else reject(new Error("Invalid ID"));
+        }, 100);
+    });
+};
+
+// Consuming with .then/.catch
+fetchUser(1)
+    .then(user => console.log(user.name))   // "Tushar"
+    .catch(err => console.error(err.message))
+    .finally(() => console.log("done"));     // always runs
+
+// === async/await — syntactic sugar over Promises ===
+async function getUser(id) {
+    try {
+        const user = await fetchUser(id);  // pauses until resolved
+        console.log(user.name);
+        return user;
+    } catch (err) {
+        console.error(err.message);
+    }
+}
+
+// === Promise combinators (interview favorites!) ===
+
+// Promise.all — wait for ALL, fail-fast on ANY rejection
+const [users, posts] = await Promise.all([
+    fetch("/api/users").then(r => r.json()),
+    fetch("/api/posts").then(r => r.json()),
+]);
+// If ANY promise rejects → entire Promise.all rejects
+
+// Promise.allSettled — wait for ALL, never fails
+const results = await Promise.allSettled([
+    fetch("/api/users"),
+    fetch("/api/might-fail"),
+]);
+// results: [
+//   { status: "fulfilled", value: Response },
+//   { status: "rejected", reason: Error },
+// ]
+// Use when you want ALL results regardless of failures
+
+// Promise.race — first to settle (resolve OR reject) wins
+const result = await Promise.race([
+    fetch("/api/primary"),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000)),
+]);
+// ↑ Timeout pattern: if API takes > 5s, reject
+
+// Promise.any — first to RESOLVE wins (ignores rejections)
+const fastest = await Promise.any([
+    fetch("https://cdn1.example.com/data"),
+    fetch("https://cdn2.example.com/data"),
+    fetch("https://cdn3.example.com/data"),
+]);
+// Returns the first successful response
+// Only rejects if ALL promises reject (AggregateError)
+```
+
+```
+Promise Combinators Summary:
+  ┌──────────────────┬──────────────────┬──────────────────────────┐
+  │ Method           │ Resolves when    │ Rejects when             │
+  ├──────────────────┼──────────────────┼──────────────────────────┤
+  │ Promise.all      │ ALL resolve      │ ANY rejects (fail-fast)  │
+  │ Promise.allSettled│ ALL settle      │ Never rejects            │
+  │ Promise.race     │ First settles    │ First settles (if rej)   │
+  │ Promise.any      │ First resolves   │ ALL reject               │
+  └──────────────────┴──────────────────┴──────────────────────────┘
+```
+
+#### ES2020+ Features — Modern JavaScript
+
+```javascript
+// === Optional Chaining (?.) — safe property access ===
+const user = { profile: { address: null } };
+const city = user?.profile?.address?.city;  // undefined (no error!)
+const method = user?.getName?.();           // undefined if getName doesn't exist
+
+// === Nullish Coalescing (??) — default only for null/undefined ===
+const port = config.port ?? 3000;     // 3000 if port is null/undefined
+const port2 = config.port || 3000;    // 3000 if port is null/undefined/0/""/"false"
+// ?? is safer: `0 ?? 3000` → 0, but `0 || 3000` → 3000
+
+// === structuredClone — true deep copy (built-in!) ===
+const original = { nested: { value: 42 }, date: new Date() };
+const clone = structuredClone(original);
+clone.nested.value = 99;
+original.nested.value;  // still 42! (true deep copy)
+// Handles: Dates, Maps, Sets, Arrays, RegExp — unlike JSON.parse(JSON.stringify())
+
+// === Object.groupBy (ES2024) ===
+const people = [
+    { name: "Alice", role: "dev" },
+    { name: "Bob", role: "dev" },
+    { name: "Carol", role: "pm" },
+];
+const grouped = Object.groupBy(people, (p) => p.role);
+// { dev: [{name: "Alice"}, {name: "Bob"}], pm: [{name: "Carol"}] }
+
+// === Array immutable methods (ES2023) ===
+const arr = [3, 1, 4, 1, 5];
+arr.toSorted();      // [1, 1, 3, 4, 5]  — returns NEW array, original unchanged
+arr.toReversed();    // [5, 1, 4, 1, 3]  — returns NEW array
+arr.toSpliced(1, 1); // [3, 4, 1, 5]     — returns NEW array
+arr.with(0, 99);     // [99, 1, 4, 1, 5] — returns NEW array with index 0 = 99
+
+// === Top-level await (ES2022) — in modules only ===
+// Previously: await only inside async functions
+// Now: can use at the top level of ES modules
+const data = await fetch("/api/config").then(r => r.json());
+export default data;
+
+// === Logical Assignment Operators ===
+let a = null;
+a ??= "default";   // a = "default" (only if null/undefined)
+a ||= "fallback";  // a = "fallback" (if falsy)
+a &&= "updated";   // a = "updated" (if truthy)
+```
+
+#### Destructuring, Spread & Rest
+
+```javascript
+// === Object destructuring ===
+const user = { name: "Tushar", age: 30, role: "architect" };
+const { name, age, role: jobTitle } = user;  // rename: `role` → `jobTitle`
+const { name: n, ...rest } = user;  // rest: { age: 30, role: "architect" }
+
+// Default values
+const { theme = "dark", lang = "en" } = config;
+
+// Nested destructuring
+const { profile: { address: { city } } } = user;
+
+// === Array destructuring ===
+const [first, second, ...remaining] = [1, 2, 3, 4, 5];
+// first=1, second=2, remaining=[3,4,5]
+
+// Skip elements
+const [, , third] = [1, 2, 3];  // third = 3
+
+// Swap variables (no temp needed!)
+let a = 1, b = 2;
+[a, b] = [b, a];  // a=2, b=1
+
+// === Spread operator (...) ===
+// Shallow copy objects/arrays
+const copy = { ...user };         // shallow copy of user
+const merged = { ...defaults, ...overrides };  // merge (overrides win)
+
+// Spread into function args
+const numbers = [1, 2, 3];
+Math.max(...numbers);  // 3
+
+// === Rest parameters ===
+function sum(...nums) {
+    return nums.reduce((acc, n) => acc + n, 0);
+}
+sum(1, 2, 3, 4);  // 10
+```
+
+#### Modules — ESM vs CommonJS
+
+```javascript
+// === ES Modules (ESM) — the modern standard ===
+// Named exports
+export const API_URL = "https://api.example.com";
+export function fetchUser(id) { /* ... */ }
+
+// Default export
+export default class UserService { /* ... */ }
+
+// Importing
+import UserService, { API_URL, fetchUser } from "./userService.js";
+
+// Dynamic import (code splitting!)
+const module = await import("./heavyChart.js");  // loaded on demand
+module.renderChart(data);
+
+// Re-export
+export { fetchUser } from "./userService.js";
+export * from "./utils.js";
+
+// === CommonJS (CJS) — Node.js legacy ===
+const fs = require("fs");
+module.exports = { fetchUser, API_URL };
+// Still used in Node.js, but ESM is the future
+
+// === Key differences ===
+// ESM:  static imports (at compile time) → enables tree shaking
+// CJS:  dynamic requires (at runtime) → can't tree shake
+// ESM:  `import/export` syntax
+// CJS:  `require/module.exports` syntax
+// ESM:  async loading supported (top-level await)
+// CJS:  synchronous only
+```
+
+📌 **TLDR:** "JS fundamentals: `const` by default, `let` for reassignment, never `var`. Closures = functions that remember outer scope. `this` depends on call site (arrow functions inherit it). Prototype chain = how objects inherit. Event loop: sync → microtasks (Promises) → macrotasks (setTimeout). `Promise.all` fails fast, `Promise.allSettled` never fails. Modern JS: `?.` for safe access, `??` for null/undefined defaults, `structuredClone` for deep copy."
+
+---
+
+### 27.2 Throttling, Debouncing & Performance
+
+> **📣 Definition:** _"Debounce = wait until user STOPS doing something, then execute. Throttle = execute at most once per time interval. Both are used to limit how often expensive functions run (API calls, DOM updates, scroll handlers)."_
+
+#### Debounce — Wait for Silence
+
+```
+Debounce (trailing — default):
+  User types: H-e-l-l-o
+  Timer:      [300ms][300ms][300ms][300ms][300ms] → FIRE!
+  Executes:   only after 300ms of SILENCE
+
+  Use case: Search-as-you-type, window resize handler, form validation
+
+Debounce (leading):
+  User types: H-e-l-l-o
+  Timer:      FIRE! [300ms wait] → ignore all until silence
+  Executes:   immediately on FIRST call, then waits for silence
+```
+
+```javascript
+// === Implement debounce from scratch (interview classic!) ===
+function debounce(fn, delay = 300) {
+    let timerId = null;
+    return function (...args) {
+        clearTimeout(timerId);  // cancel previous timer
+        timerId = setTimeout(() => {
+            fn.apply(this, args);  // execute after delay
+        }, delay);
+    };
+}
+
+// Usage
+const searchInput = document.getElementById("search");
+const handleSearch = debounce((query) => {
+    fetch(`/api/search?q=${query}`).then(/* ... */);
+}, 300);
+searchInput.addEventListener("input", (e) => handleSearch(e.target.value));
+
+// === Leading debounce (execute on first call) ===
+function debounceLeading(fn, delay = 300) {
+    let timerId = null;
+    return function (...args) {
+        if (!timerId) {
+            fn.apply(this, args);  // execute immediately on first call
+        }
+        clearTimeout(timerId);
+        timerId = setTimeout(() => {
+            timerId = null;  // reset after silence
+        }, delay);
+    };
+}
+```
+
+#### Throttle — Execute at Most Once Per Interval
+
+```
+Throttle:
+  Scroll events: |||||||||||||||||||||||||||
+  Throttle 200ms: |    |    |    |    |    |
+  Executes:       every 200ms (no matter how many events fire)
+
+  Use case: Scroll handler, mousemove, window resize, API rate limiting
+```
+
+```javascript
+// === Implement throttle from scratch ===
+function throttle(fn, interval = 200) {
+    let lastTime = 0;
+    return function (...args) {
+        const now = Date.now();
+        if (now - lastTime >= interval) {
+            lastTime = now;
+            fn.apply(this, args);
+        }
+    };
+}
+
+// === Throttle with trailing call (don't miss the last event) ===
+function throttleWithTrailing(fn, interval = 200) {
+    let lastTime = 0;
+    let timerId = null;
+    return function (...args) {
+        const now = Date.now();
+        const remaining = interval - (now - lastTime);
+        clearTimeout(timerId);
+        if (remaining <= 0) {
+            lastTime = now;
+            fn.apply(this, args);
+        } else {
+            timerId = setTimeout(() => {
+                lastTime = Date.now();
+                fn.apply(this, args);
+            }, remaining);
+        }
+    };
+}
+
+// Usage: scroll position tracking
+window.addEventListener("scroll", throttle(() => {
+    console.log("Scroll position:", window.scrollY);
+}, 200));
+
+// === RequestAnimationFrame-based throttle (smoothest for visual updates) ===
+function throttleRAF(fn) {
+    let rafId = null;
+    return function (...args) {
+        if (rafId) return;
+        rafId = requestAnimationFrame(() => {
+            fn.apply(this, args);
+            rafId = null;
+        });
+    };
+}
+```
+
+```
+Debounce vs Throttle — when to use which:
+  ┌──────────────────────┬────────────────────────────────────┐
+  │ Debounce             │ Throttle                            │
+  ├──────────────────────┼────────────────────────────────────┤
+  │ Search input         │ Scroll handler                      │
+  │ Window resize        │ Mousemove / drag                    │
+  │ Form auto-save       │ Button click (prevent double-click) │
+  │ API calls after      │ API polling                         │
+  │   user stops typing  │ Progress updates                    │
+  └──────────────────────┴────────────────────────────────────┘
+  Debounce: "Wait until they STOP"
+  Throttle: "Execute at most once every X ms"
+```
+
+#### Core Web Vitals — What Google Measures
+
+```
+Three metrics that Google uses for SEO ranking and user experience:
+
+  LCP (Largest Contentful Paint) — Loading
+    What: Time until the largest visible element (image, text block) renders
+    Good: ≤ 2.5s    Needs work: ≤ 4.0s    Poor: > 4.0s
+    Fix:  Preload hero image, optimize fonts, SSR, use CDN
+
+  INP (Interaction to Next Paint) — Responsiveness
+    What: Time from user interaction (click, tap) to visual response
+    Good: ≤ 200ms   Needs work: ≤ 500ms   Poor: > 500ms
+    Fix:  Break long tasks (>50ms), use web workers, defer non-critical JS
+
+  CLS (Cumulative Layout Shift) — Visual Stability
+    What: How much the page layout shifts unexpectedly during load
+    Good: ≤ 0.1     Needs work: ≤ 0.25    Poor: > 0.25
+    Fix:  Set explicit width/height on images/videos, avoid inserting
+          content above existing content, use font-display: swap
+```
+
+#### What Happens When You Type a URL — Asset Retrieval Flow
+
+```
+THE COMPLETE FLOW (interview classic!):
+
+  User types: https://www.example.com/app
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ 1. DNS Resolution — "What IP is www.example.com?"            │
+  ├──────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │  Browser cache → OS cache → Router cache → ISP DNS cache     │
+  │  If not cached:                                              │
+  │    ISP Resolver → Root DNS (.) → TLD DNS (.com)              │
+  │                → Authoritative DNS (example.com)             │
+  │                → returns IP: 93.184.216.34                   │
+  │                                                              │
+  │  Optimization: <link rel="dns-prefetch"> for third-party     │
+  │  Time: ~20-120ms (if not cached)                             │
+  └──────────────────────────────────────────────────────────────┘
+                         │
+  ┌──────────────────────▼───────────────────────────────────────┐
+  │ 2. TCP Connection — 3-Way Handshake                          │
+  ├──────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │  Client → SYN → Server        "Can I connect?"               │
+  │  Server → SYN-ACK → Client    "Yes, go ahead"               │
+  │  Client → ACK → Server        "Connected!"                  │
+  │                                                              │
+  │  Optimization: <link rel="preconnect"> does DNS + TCP early  │
+  │  HTTP/2: single connection, multiplexed streams              │
+  │  HTTP/3 (QUIC): UDP-based, 0-RTT reconnects                 │
+  │  Time: ~30-100ms (1 RTT for TCP)                             │
+  └──────────────────────────────────────────────────────────────┘
+                         │
+  ┌──────────────────────▼───────────────────────────────────────┐
+  │ 3. TLS Handshake — Establish Encrypted Connection (HTTPS)    │
+  ├──────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │  TLS 1.3 (modern):                                           │
+  │    Client → ClientHello (supported ciphers + key share)      │
+  │    Server → ServerHello + Certificate + Finished             │
+  │    Client → Finished                                         │
+  │    → 1 RTT (vs 2 RTT in TLS 1.2)                            │
+  │    → 0-RTT on reconnection (resumption)                      │
+  │                                                              │
+  │  Certificate verification:                                   │
+  │    Browser checks: valid CA? expired? hostname match?        │
+  │    OCSP stapling: server proves cert isn't revoked           │
+  │  Time: ~50-150ms (1 RTT for TLS 1.3)                        │
+  └──────────────────────────────────────────────────────────────┘
+                         │
+  ┌──────────────────────▼───────────────────────────────────────┐
+  │ 4. HTTP Request / Response                                   │
+  ├──────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │  Request:                                                    │
+  │    GET /app HTTP/2                                           │
+  │    Host: www.example.com                                     │
+  │    Accept: text/html                                         │
+  │    Cookie: session=abc123                                    │
+  │    If-None-Match: "etag-xyz"  (conditional — do you have     │
+  │                                 a newer version?)            │
+  │                                                              │
+  │  Response (200 OK):                                          │
+  │    Content-Type: text/html                                   │
+  │    Cache-Control: no-cache                                   │
+  │    ETag: "etag-xyz-v2"                                       │
+  │    Content-Encoding: br (Brotli compressed)                  │
+  │    → HTML body (decompressed by browser)                     │
+  │                                                              │
+  │  OR Response (304 Not Modified):                             │
+  │    → no body! browser uses cached version                    │
+  │    → saves bandwidth, very fast                              │
+  │                                                              │
+  │  Time: ~50-300ms (depends on server + payload size)          │
+  └──────────────────────────────────────────────────────────────┘
+                         │
+  ┌──────────────────────▼───────────────────────────────────────┐
+  │ 5. Browser Caching Decision Tree                             │
+  ├──────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │  Has Cache-Control: no-store?                                │
+  │    YES → don't cache, always fetch fresh                     │
+  │    NO  ↓                                                     │
+  │  Has Cache-Control: no-cache or max-age=0?                   │
+  │    YES → cache it, but revalidate every time (ETag/304)      │
+  │    NO  ↓                                                     │
+  │  Has Cache-Control: max-age=N?                               │
+  │    YES → is the cache entry < N seconds old?                 │
+  │      YES → serve directly from cache (no network!)           │
+  │      NO  → revalidate with server (ETag/If-None-Match)       │
+  │    NO  → use heuristic caching (10% of Last-Modified age)    │
+  │                                                              │
+  │  Where is it cached?                                         │
+  │    Memory cache: in-tab, fastest, lost on tab close          │
+  │    Disk cache:   on disk, survives tab close/browser restart │
+  │    Service Worker cache: programmatic, offline support       │
+  │    CDN cache:    at edge, closest to user geographically     │
+  └──────────────────────────────────────────────────────────────┘
+                         │
+  ┌──────────────────────▼───────────────────────────────────────┐
+  │ 6. Critical Rendering Path — HTML to Pixels                  │
+  ├──────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │  a) Parse HTML → DOM Tree                                    │
+  │     Browser reads HTML top-to-bottom                         │
+  │     Encounters <link rel="stylesheet"> → fetches CSS         │
+  │     Encounters <script> → BLOCKS parsing (unless async/defer)│
+  │     Encounters <img> → fires off async request (non-blocking)│
+  │                                                              │
+  │  b) Parse CSS → CSSOM                                        │
+  │     CSS is RENDER-BLOCKING (browser won't paint until        │
+  │     all CSS is parsed — to avoid FOUC: Flash of Unstyled     │
+  │     Content)                                                 │
+  │                                                              │
+  │  c) DOM + CSSOM → Render Tree                                │
+  │     Only visible elements (no display:none, no <head>)       │
+  │                                                              │
+  │  d) Layout → compute size/position of each element           │
+  │  e) Paint → fill in pixels                                   │
+  │  f) Composite → GPU layers merged (transforms, opacity)      │
+  │                                                              │
+  │  Sub-resource fetching (parallel):                           │
+  │    CSS files:   render-blocking (must complete before paint)  │
+  │    JS files:    parser-blocking (unless async/defer)          │
+  │    Images:      non-blocking (page renders with placeholders) │
+  │    Fonts:       may cause FOIT (Flash of Invisible Text)      │
+  │                 or FOUT (Flash of Unstyled Text)              │
+  │                 → fix with font-display: swap                 │
+  └──────────────────────────────────────────────────────────────┘
+
+  Total time for first meaningful paint:
+    DNS + TCP + TLS + HTTP + Parse + Render = ~500ms - 3s
+    With CDN + HTTP/2 + preload + cache: ~100ms - 500ms
+```
+
+```
+Sub-resource retrieval priority (browser decides!):
+
+  ┌─────────────────────────────┬───────────┬─────────────────────────┐
+  │ Resource                    │ Priority  │ Behavior                 │
+  ├─────────────────────────────┼───────────┼─────────────────────────┤
+  │ HTML document               │ Highest   │ Must complete first      │
+  │ CSS in <head>               │ Highest   │ Render-blocking          │
+  │ Preloaded resources         │ High      │ <link rel="preload">     │
+  │ <script> (no async/defer)   │ High      │ Parser-blocking          │
+  │ <script defer>              │ High      │ Execute after parse      │
+  │ Fonts (used on page)        │ High      │ May block text rendering │
+  │ <script async>              │ Medium    │ Execute when ready       │
+  │ Images in viewport          │ Medium    │ Visible immediately      │
+  │ Images outside viewport     │ Low       │ loading="lazy"           │
+  │ Prefetched resources        │ Lowest    │ <link rel="prefetch">    │
+  └─────────────────────────────┴───────────┴─────────────────────────┘
+
+  fetchpriority attribute (Chrome 101+):
+    <img src="hero.jpg" fetchpriority="high" />    <!-- LCP image -->
+    <img src="below-fold.jpg" fetchpriority="low" />
+    <script src="analytics.js" fetchpriority="low"></script>
+```
+
+#### Asset Loading Strategies
+
+```html
+<!-- Script loading — order matters! -->
+
+<!-- Default: blocks HTML parsing -->
+<script src="app.js"></script>
+
+<!-- async: downloads in parallel, executes ASAP (blocks briefly) -->
+<!-- Use for: analytics, ads — scripts that don't depend on DOM -->
+<script async src="analytics.js"></script>
+
+<!-- defer: downloads in parallel, executes AFTER HTML parsing -->
+<!-- Use for: main app bundle — guaranteed DOM is ready -->
+<script defer src="app.js"></script>
+
+<!-- Resource hints -->
+<link rel="preload" href="hero.jpg" as="image" />     <!-- critical resources -->
+<link rel="prefetch" href="next-page.js" />            <!-- future navigations -->
+<link rel="preconnect" href="https://api.example.com" /> <!-- early DNS + TLS -->
+<link rel="dns-prefetch" href="https://cdn.example.com" /> <!-- DNS only -->
+
+<!-- Lazy loading images (native browser support!) -->
+<img src="photo.jpg" loading="lazy" alt="Photo" width="800" height="600" />
+
+<!-- Font optimization -->
+<link rel="preload" href="font.woff2" as="font" type="font/woff2" crossorigin />
+```
+
+```
+Script Loading Summary:
+  ┌─────────┬──────────────────────────────────────────────┐
+  │ Default │ ██████ Download ██████ Execute ──── Continue │
+  │         │ ↑ Blocks HTML parsing entirely                │
+  │ async   │ ── Download ── Execute ── Continue            │
+  │         │ ↑ Non-blocking download, blocks when executes │
+  │ defer   │ ── Download ──────────────── Execute          │
+  │         │ ↑ Non-blocking, executes after HTML parsed    │
+  └─────────┴──────────────────────────────────────────────┘
+```
+
+#### Caching — HTTP Cache Headers
+
+```
+Cache-Control headers (most important for performance):
+
+  Cache-Control: public, max-age=31536000, immutable
+    → Cache for 1 year, never revalidate (use for hashed assets: app.a1b2c3.js)
+
+  Cache-Control: no-cache
+    → Always revalidate with server before using cached copy (use for HTML)
+    → DOES NOT mean "don't cache" — it means "always check first"
+
+  Cache-Control: no-store
+    → Never cache at all (use for sensitive data)
+
+  ETag / If-None-Match:
+    → Server sends ETag: "abc123" with response
+    → Browser sends If-None-Match: "abc123" on next request
+    → Server returns 304 Not Modified if unchanged (no body = fast!)
+
+  Caching strategy for SPAs:
+    HTML:     Cache-Control: no-cache (always check for new version)
+    JS/CSS:   Cache-Control: max-age=31536000, immutable (content-hashed filenames)
+    API:      Cache-Control: private, max-age=0 (don't cache user data)
+    Images:   Cache-Control: public, max-age=86400 (1 day)
+```
+
+📌 **TLDR:** "Debounce = wait until user stops, then fire (search input). Throttle = fire at most once per interval (scroll). Core Web Vitals: LCP ≤ 2.5s (loading), INP ≤ 200ms (responsiveness), CLS ≤ 0.1 (stability). Use `defer` for main JS bundles, `async` for analytics. Preload critical assets, lazy-load images. Cache hashed assets forever (`immutable`), always revalidate HTML (`no-cache`)."
+
+---
+
+### 27.3 DOM, Browser & Web APIs
+
+#### DOM Events — Bubbling, Capturing & Delegation
+
+```javascript
+// === Event Propagation ===
+// When you click a button inside a div inside body:
+//
+//   Capturing (top → down):  window → document → body → div → button
+//   Target:                  button (the clicked element)
+//   Bubbling (bottom → up):  button → div → body → document → window
+//
+// By default, addEventListener listens during BUBBLING phase
+
+// === Event Delegation — ONE handler for MANY children ===
+// Instead of adding click handlers to 1000 list items:
+const list = document.getElementById("todo-list");
+list.addEventListener("click", (e) => {
+    if (e.target.matches("li.todo-item")) {
+        // Handle click on any todo item — even ones added later!
+        e.target.classList.toggle("completed");
+    }
+});
+// WHY: fewer event listeners = less memory, works for dynamic content
+
+// === stopPropagation vs preventDefault ===
+button.addEventListener("click", (e) => {
+    e.stopPropagation();  // stop event from bubbling UP to parent
+    e.preventDefault();   // prevent default browser behavior (e.g., form submit, link navigation)
+});
+
+// === Capturing phase (rare but useful) ===
+document.addEventListener("click", handler, { capture: true });  // fires during capture (top-down)
+document.addEventListener("click", handler, { once: true });     // auto-remove after first call
+document.addEventListener("click", handler, { passive: true });  // promise not to call preventDefault (better scroll perf)
+```
+
+#### Browser Rendering Pipeline
+
+```
+What happens when the browser loads a page:
+
+  1. Parse HTML → DOM Tree (Document Object Model)
+  2. Parse CSS → CSSOM (CSS Object Model)
+  3. Combine DOM + CSSOM → Render Tree (only visible elements)
+  4. Layout (Reflow) → calculate size and position of each element
+  5. Paint → fill in pixels (colors, text, images, shadows)
+  6. Composite → layer composition (GPU-accelerated: transforms, opacity)
+
+  Reflow (Layout) — EXPENSIVE:
+    Triggered by: changing width/height, adding/removing elements,
+                  reading offsetHeight/scrollTop, changing font-size
+    Affects: the element AND its children/siblings
+
+  Repaint — MODERATE:
+    Triggered by: changing color, background, visibility, box-shadow
+    Does NOT change layout — just visual appearance
+
+  Composite — CHEAP:
+    Triggered by: transform, opacity
+    GPU-accelerated — use for animations!
+
+  // ❌ BAD: causes multiple reflows
+  for (let i = 0; i < 100; i++) {
+      element.style.left = element.offsetLeft + 1 + "px";  // read + write in loop!
+  }
+
+  // ✅ GOOD: batch reads and writes
+  const left = element.offsetLeft;  // read ONCE
+  element.style.transform = `translateX(${left + 100}px)`;  // write ONCE, GPU-composited
+```
+
+#### Storage APIs — Where to Store Data
+
+| Feature | Cookies | localStorage | sessionStorage | IndexedDB |
+|---------|---------|-------------|----------------|-----------|
+| **Size** | ~4 KB | ~5-10 MB | ~5-10 MB | Hundreds of MB |
+| **Sent to server** | Yes (every request!) | No | No | No |
+| **Persistence** | Until expiry | Until cleared | Until tab closed | Until cleared |
+| **Scope** | Domain + path | Domain | Domain + tab | Domain |
+| **API** | `document.cookie` | `getItem/setItem` | `getItem/setItem` | Async, cursor-based |
+| **Use case** | Auth tokens, session ID | User prefs, theme | Form drafts | Offline data, large datasets |
+
+```javascript
+// localStorage — persistent key-value storage
+localStorage.setItem("theme", "dark");
+const theme = localStorage.getItem("theme");  // "dark"
+localStorage.removeItem("theme");
+
+// sessionStorage — same API, but cleared when tab closes
+sessionStorage.setItem("scroll_position", "1234");
+
+// Cookies — sent with EVERY HTTP request (security-relevant!)
+document.cookie = "token=abc123; Secure; SameSite=Strict; HttpOnly; max-age=3600";
+//  HttpOnly:    can't be accessed by JavaScript (XSS protection!)
+//  Secure:      only sent over HTTPS
+//  SameSite:    Strict = same-site only, Lax = top-level nav, None = cross-site
+//  max-age:     expiry in seconds
+```
+
+#### CORS — Cross-Origin Resource Sharing
+
+```
+The Problem:
+  Your frontend (https://myapp.com) calls API (https://api.myapp.com)
+  Browser blocks it! → "CORS error" (same-origin policy)
+
+The Solution:
+  Server sends headers telling the browser "this origin is allowed"
+
+  Simple Request (GET/POST with standard headers):
+    Browser → GET /api/users (Origin: https://myapp.com)
+    Server → 200 OK (Access-Control-Allow-Origin: https://myapp.com)
+    Browser → allows the response ✅
+
+  Preflight Request (PUT/DELETE, custom headers, JSON body):
+    Browser → OPTIONS /api/users (preflight check)
+    Server → 204 No Content
+      Access-Control-Allow-Origin: https://myapp.com
+      Access-Control-Allow-Methods: GET, POST, PUT, DELETE
+      Access-Control-Allow-Headers: Authorization, Content-Type
+      Access-Control-Max-Age: 86400  (cache preflight for 24h)
+    Browser → actual PUT /api/users
+    Server → 200 OK ✅
+
+  Common Gotchas:
+    - Credentials (cookies): server must send
+        Access-Control-Allow-Credentials: true
+        AND origin must be specific (not wildcard *)
+    - Preflight caching: use Access-Control-Max-Age to avoid preflight on every request
+```
+
+#### Web Security — XSS, CSRF, CSP
+
+```
+XSS (Cross-Site Scripting) — inject malicious scripts:
+  Stored XSS:    Attacker saves <script>steal(cookies)</script> in DB
+                  → every user who views it gets hacked
+  Reflected XSS: Attacker crafts URL with script in query params
+                  → victim clicks link, script executes
+  DOM-based XSS: Client-side JS uses user input unsafely
+                  → innerHTML = userInput (never do this!)
+
+  Prevention:
+    ✅ Escape/sanitize all user input before rendering
+    ✅ Use textContent instead of innerHTML
+    ✅ React auto-escapes JSX (safe by default!)
+    ✅ Content Security Policy (CSP) header
+    ✅ HttpOnly cookies (JS can't read auth tokens)
+    ❌ NEVER use dangerouslySetInnerHTML with user data (React)
+    ❌ NEVER use v-html with user data (Vue)
+    ❌ NEVER use [innerHTML] with user data (Angular)
+
+CSRF (Cross-Site Request Forgery) — trick user into making requests:
+  Attacker's site has: <form action="https://bank.com/transfer" method="POST">
+  If user is logged into bank.com → their cookies are sent automatically!
+
+  Prevention:
+    ✅ CSRF tokens (server generates, client sends back)
+    ✅ SameSite=Strict cookies (browser blocks cross-site sending)
+    ✅ Check Origin/Referer headers
+    ✅ Re-authenticate for sensitive actions
+
+CSP (Content Security Policy) — whitelist allowed resources:
+  Content-Security-Policy: default-src 'self';
+    script-src 'self' https://cdn.example.com;
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' https: data:;
+    connect-src 'self' https://api.example.com;
+  → Only scripts from own domain + CDN allowed
+  → Blocks inline scripts (XSS mitigation)
+```
+
+#### SSR vs CSR vs SSG vs ISR — Rendering Strategies
+
+```
+CSR (Client-Side Rendering) — React SPA default:
+  Server sends: <div id="root"></div> + JS bundle
+  Browser: downloads JS → executes → fetches data → renders UI
+  Pros: fast page transitions, rich interactivity
+  Cons: slow initial load, poor SEO (empty HTML), large bundle
+
+SSR (Server-Side Rendering) — Next.js, Nuxt.js:
+  Server: runs React/Vue → generates full HTML → sends to browser
+  Browser: shows HTML immediately → downloads JS → "hydrates" (makes interactive)
+  Pros: fast first paint, great SEO, social sharing works
+  Cons: higher server cost, TTFB can be slow, hydration overhead
+
+SSG (Static Site Generation) — pre-built at deploy time:
+  Build time: generate HTML for every page → deploy as static files
+  Pros: fastest possible (served from CDN), great SEO, zero server cost
+  Cons: rebuild needed for content changes, not suitable for dynamic data
+
+ISR (Incremental Static Regeneration) — Next.js innovation:
+  First request: serve cached static page
+  Background: regenerate page every N seconds
+  Pros: static performance + fresh data, no full rebuild needed
+  Cons: stale data window, Next.js specific
+
+Hydration:
+  "Making server-rendered HTML interactive"
+  Server sends HTML → browser renders it (fast!)
+  JS downloads → React/Vue attaches event listeners to existing HTML
+  Until hydration: page LOOKS ready but isn't INTERACTIVE
+  Problem: "uncanny valley" — user clicks but nothing happens
+
+  Partial Hydration: only hydrate interactive parts (React Server Components)
+  Progressive Hydration: hydrate components as they become visible
+  Resumability: Qwik framework — no hydration needed at all!
+```
+
+#### Service Workers & PWA
+
+```javascript
+// Service Worker — a proxy between browser and network
+// Runs in background, separate from the page
+// Enables: offline support, push notifications, background sync
+
+// Register a service worker
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js");
+}
+
+// === sw.js — Cache-First strategy (offline-first) ===
+const CACHE_NAME = "v1";
+const ASSETS = ["/", "/index.html", "/app.js", "/styles.css"];
+
+// Install — cache critical assets
+self.addEventListener("install", (event) => {
+    event.waitUntil(
+        caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
+    );
+});
+
+// Fetch — serve from cache, fallback to network
+self.addEventListener("fetch", (event) => {
+    event.respondWith(
+        caches.match(event.request).then((cached) => {
+            return cached || fetch(event.request);
+        })
+    );
+});
+
+// Caching Strategies:
+//   Cache-First:    check cache → miss → network (best for static assets)
+//   Network-First:  check network → fail → cache (best for API data)
+//   Stale-While-Revalidate: serve cache immediately → update cache in background
+//     → best for frequently updated content (news, social feeds)
+```
+
+📌 **TLDR:** "DOM events bubble up by default — use event delegation (one handler on parent). Rendering: reflow is expensive (layout), repaint is moderate (visual), compositing is cheap (GPU transforms). Use CSS transforms for animations. Storage: localStorage for prefs, cookies for auth (HttpOnly + Secure + SameSite). CORS: server must whitelist your origin. XSS: escape all user input, use CSP headers. SSR for SEO + fast first paint, CSR for rich interactivity, SSG for static content."
+
+---
+
+### 27.4 CSS Essentials — Layout, Specificity & Responsive Design
+
+#### Box Model — How Every Element is Sized
+
+```
+Every HTML element is a box with 4 layers:
+
+  ┌────────────── Margin (space outside border) ──────────────┐
+  │  ┌────────── Border ──────────┐                           │
+  │  │  ┌────── Padding ───────┐  │                           │
+  │  │  │  ┌── Content ─────┐  │  │                           │
+  │  │  │  │  width × height │  │  │                           │
+  │  │  │  └────────────────┘  │  │                           │
+  │  │  └──────────────────────┘  │                           │
+  │  └────────────────────────────┘                           │
+  └───────────────────────────────────────────────────────────┘
+
+  box-sizing: content-box (DEFAULT — dangerous!)
+    width: 200px → content is 200px
+    + padding: 20px → total width becomes 240px  ← surprise!
+    + border: 2px → total width becomes 244px    ← more surprise!
+
+  box-sizing: border-box (USE THIS ALWAYS)
+    width: 200px → TOTAL width is 200px (including padding + border)
+    Content shrinks to fit
+
+  /* Every project should start with this: */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  Margin Collapse:
+    Two adjacent vertical margins MERGE into one (the larger wins)
+    margin-bottom: 20px + margin-top: 30px = 30px gap (not 50px!)
+    Does NOT happen with: flexbox, grid, or horizontal margins
+```
+
+#### CSS Specificity — Which Rule Wins?
+
+```
+Specificity = weight system that determines which CSS rule applies
+
+  Inline styles                          → 1,0,0,0
+  IDs (#header)                          → 0,1,0,0
+  Classes (.nav), attributes, pseudo     → 0,0,1,0
+  Elements (div, p), pseudo-elements     → 0,0,0,1
+
+  Examples:
+    div                    → 0,0,0,1
+    .card                  → 0,0,1,0
+    #header                → 0,1,0,0
+    div.card               → 0,0,1,1
+    #header .nav li.active → 0,1,2,1
+    style="..."            → 1,0,0,0 (always wins)
+
+  !important → overrides EVERYTHING (avoid in production!)
+
+  The cascade (when specificity is equal):
+    1. Origin (user-agent → author → user)
+    2. Specificity (higher wins)
+    3. Source order (last one wins)
+
+  Modern: @layer lets you control cascade order explicitly
+```
+
+#### Flexbox — 1D Layout (Row OR Column)
+
+```css
+/* Parent (flex container) */
+.container {
+    display: flex;
+    flex-direction: row;           /* row | column | row-reverse | column-reverse */
+    justify-content: center;       /* main axis: flex-start | center | space-between | space-around | space-evenly */
+    align-items: center;           /* cross axis: flex-start | center | stretch | baseline */
+    gap: 16px;                     /* space between items */
+    flex-wrap: wrap;               /* allow items to wrap to next line */
+}
+
+/* Children (flex items) */
+.item {
+    flex-grow: 1;     /* how much to grow (0 = don't grow) */
+    flex-shrink: 0;   /* how much to shrink (0 = don't shrink) */
+    flex-basis: 200px; /* initial size before growing/shrinking */
+    /* Shorthand: flex: 1 0 200px; (grow shrink basis) */
+}
+
+/* === Common patterns === */
+/* Center anything (the "flexbox holy grail") */
+.center {
+    display: flex;
+    justify-content: center;  /* horizontal center */
+    align-items: center;      /* vertical center */
+    height: 100vh;
+}
+
+/* Navbar: logo left, links right */
+.navbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Equal-width columns */
+.columns { display: flex; gap: 16px; }
+.columns > * { flex: 1; }
+```
+
+#### CSS Grid — 2D Layout (Rows AND Columns)
+
+```css
+/* Parent (grid container) */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);  /* 3 equal columns */
+    grid-template-rows: auto;
+    gap: 16px;                               /* row + column gap */
+}
+
+/* Responsive grid (auto-fit + minmax = no media queries needed!) */
+.responsive-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px;
+    /* Cards automatically wrap to next row when space runs out */
+}
+
+/* Named areas (great for page layouts) */
+.layout {
+    display: grid;
+    grid-template-areas:
+        "header header header"
+        "sidebar main main"
+        "footer footer footer";
+    grid-template-columns: 250px 1fr 1fr;
+    grid-template-rows: auto 1fr auto;
+    min-height: 100vh;
+}
+.header  { grid-area: header; }
+.sidebar { grid-area: sidebar; }
+.main    { grid-area: main; }
+.footer  { grid-area: footer; }
+
+/* Span multiple columns/rows */
+.featured { grid-column: span 2; }  /* takes up 2 columns */
+.tall     { grid-row: span 3; }     /* takes up 3 rows */
+```
+
+```
+Flexbox vs Grid — when to use which:
+  Flexbox: 1D (single row OR single column)
+    → Navigation bars, card rows, toolbar buttons, centering
+  Grid: 2D (rows AND columns together)
+    → Page layouts, image galleries, dashboards, complex forms
+  Both: can be nested — Grid for page layout, Flexbox inside components
+```
+
+#### Positioning
+
+```css
+/* static (default) — normal document flow */
+.static { position: static; }
+
+/* relative — offset from normal position, still takes space */
+.relative { position: relative; top: 10px; left: 20px; }
+
+/* absolute — positioned relative to nearest positioned ancestor */
+/* removed from normal flow */
+.absolute { position: absolute; top: 0; right: 0; }
+/* Parent MUST have position: relative (or absolute/fixed) */
+
+/* fixed — positioned relative to viewport (stays on scroll) */
+.fixed-header { position: fixed; top: 0; width: 100%; z-index: 100; }
+
+/* sticky — hybrid of relative + fixed */
+/* Stays in flow until scroll threshold, then "sticks" */
+.sticky-nav { position: sticky; top: 0; }
+/* Use case: sticky table headers, nav bars */
+```
+
+#### Responsive Design
+
+```css
+/* Mobile-first approach (start small, add for larger) */
+.container { padding: 16px; }              /* mobile default */
+
+@media (min-width: 768px) {                /* tablet+ */
+    .container { padding: 32px; max-width: 720px; margin: auto; }
+}
+
+@media (min-width: 1024px) {               /* desktop+ */
+    .container { max-width: 960px; }
+}
+
+/* Modern: clamp() — responsive without media queries! */
+.title {
+    font-size: clamp(1.5rem, 4vw, 3rem);
+    /* min: 1.5rem, preferred: 4vw, max: 3rem */
+}
+
+/* Container Queries (CSS 2023+) — respond to PARENT size, not viewport */
+.card-container { container-type: inline-size; }
+@container (min-width: 400px) {
+    .card { flex-direction: row; }  /* horizontal layout when container is wide */
+}
+
+/* Units: rem vs em vs px vs vw/vh */
+/* rem: relative to root font-size (predictable, use for spacing/fonts) */
+/* em: relative to parent font-size (compounding — dangerous in nested elements) */
+/* vw/vh: viewport width/height (use sparingly — not great on mobile) */
+/* px: absolute — use only for borders and very precise measurements */
+```
+
+📌 **TLDR:** "Always use `border-box`. Specificity: inline > ID > class > element. Flexbox for 1D (nav bars, centering), Grid for 2D (page layouts, galleries). `repeat(auto-fit, minmax(300px, 1fr))` = responsive grid without media queries. Mobile-first with `min-width` breakpoints. Use `rem` for font/spacing, `clamp()` for fluid sizing. `position: sticky` for scroll-sticking."
+
+---
+
+### 27.5 TypeScript Essentials — Type Safety for JavaScript
+
+> **📣 Why this matters:** _"TypeScript is the industry baseline for frontend development in 2026. Every major framework (React, Vue, Angular) has first-class TypeScript support. Interviewers expect you to understand type safety, generics, and how TypeScript prevents bugs at compile time."_
+
+#### Types vs Interfaces
+
+```typescript
+// === Interface — best for object shapes and class contracts ===
+interface User {
+    id: number;
+    name: string;
+    email: string;
+    role?: string;           // optional property
+    readonly createdAt: Date; // can't be changed after creation
+}
+
+// Interfaces can be EXTENDED
+interface Admin extends User {
+    permissions: string[];
+}
+
+// Declaration merging (interfaces only!)
+interface User {
+    avatar?: string;  // adds to the existing User interface
+}
+
+// === Type — more flexible, can define unions, primitives, tuples ===
+type ID = string | number;                 // union type
+type Status = "active" | "inactive" | "pending";  // string literal union
+type Coordinate = [number, number];        // tuple
+type Callback = (data: User) => void;      // function type
+
+// Intersection types (combine multiple types)
+type AdminUser = User & { permissions: string[] };
+
+// === When to use which? ===
+// Interface: for object shapes, class contracts, declaration merging
+// Type: for unions, intersections, primitives, tuples, complex types
+// Rule of thumb: use `interface` for objects, `type` for everything else
+```
+
+#### Generics — Reusable Type-Safe Code
+
+```typescript
+// Generics let you write code that works with ANY type, safely
+
+// === Basic generic function ===
+function identity<T>(value: T): T {
+    return value;
+}
+identity<string>("hello");  // T = string
+identity(42);               // T inferred as number
+
+// === Generic with constraints ===
+interface HasId { id: number; }
+
+function findById<T extends HasId>(items: T[], id: number): T | undefined {
+    return items.find(item => item.id === id);
+}
+// T must have an `id` property — compiler enforces this
+
+// === Generic React component (common pattern) ===
+interface ListProps<T> {
+    items: T[];
+    renderItem: (item: T) => React.ReactNode;
+}
+function List<T>({ items, renderItem }: ListProps<T>) {
+    return <ul>{items.map(renderItem)}</ul>;
+}
+// Usage: <List items={users} renderItem={(user) => <li>{user.name}</li>} />
+// TypeScript infers T = User from the `items` prop
+
+// === Generic API response wrapper ===
+interface ApiResponse<T> {
+    data: T;
+    status: number;
+    message: string;
+}
+
+async function fetchApi<T>(url: string): Promise<ApiResponse<T>> {
+    const res = await fetch(url);
+    return res.json();
+}
+const { data: users } = await fetchApi<User[]>("/api/users");
+// `users` is typed as User[]
+```
+
+#### Utility Types — Built-in Type Transformations
+
+```typescript
+interface User {
+    id: number;
+    name: string;
+    email: string;
+    avatar: string;
+}
+
+// Partial<T> — all properties become optional
+function updateUser(id: number, updates: Partial<User>) {
+    // updates can have any subset of User fields
+}
+updateUser(1, { name: "New Name" });  // ✅ only name is required
+
+// Required<T> — all properties become required
+type RequiredUser = Required<User>;  // no optional fields
+
+// Pick<T, Keys> — select specific properties
+type UserPreview = Pick<User, "id" | "name">;  // { id: number; name: string }
+
+// Omit<T, Keys> — exclude specific properties
+type CreateUser = Omit<User, "id">;  // User without id (for creation)
+
+// Record<Keys, Value> — create object type with specific keys
+type RolePermissions = Record<"admin" | "user" | "guest", string[]>;
+
+// Readonly<T> — all properties become readonly
+type FrozenUser = Readonly<User>;
+// const user: FrozenUser = { ... };
+// user.name = "new";  // ❌ Error: Cannot assign to 'name'
+
+// ReturnType<T> — extract return type from a function
+function getUser() { return { id: 1, name: "Tushar" }; }
+type UserReturn = ReturnType<typeof getUser>;  // { id: number; name: string }
+
+// Extract / Exclude — filter union types
+type Status = "active" | "inactive" | "pending" | "deleted";
+type ActiveStatuses = Extract<Status, "active" | "pending">;  // "active" | "pending"
+type VisibleStatuses = Exclude<Status, "deleted">;             // everything except "deleted"
+```
+
+#### Type Guards — Narrowing Types at Runtime
+
+```typescript
+// === typeof guard ===
+function format(value: string | number): string {
+    if (typeof value === "string") {
+        return value.toUpperCase();  // TS knows it's string here
+    }
+    return value.toFixed(2);         // TS knows it's number here
+}
+
+// === instanceof guard ===
+class ApiError extends Error {
+    statusCode: number;
+    constructor(message: string, statusCode: number) {
+        super(message);
+        this.statusCode = statusCode;
+    }
+}
+
+function handleError(err: Error) {
+    if (err instanceof ApiError) {
+        console.log(err.statusCode);  // TS knows it's ApiError
+    }
+}
+
+// === Discriminated unions (pattern matching!) ===
+type Shape =
+    | { kind: "circle"; radius: number }
+    | { kind: "rectangle"; width: number; height: number }
+    | { kind: "triangle"; base: number; height: number };
+
+function area(shape: Shape): number {
+    switch (shape.kind) {
+        case "circle":     return Math.PI * shape.radius ** 2;
+        case "rectangle":  return shape.width * shape.height;
+        case "triangle":   return 0.5 * shape.base * shape.height;
+    }
+    // If you add a new shape and forget a case, TS catches it!
+}
+
+// === Custom type guard (user-defined) ===
+function isUser(obj: unknown): obj is User {
+    return typeof obj === "object" && obj !== null && "id" in obj && "name" in obj;
+}
+
+const data: unknown = await fetchApi("/user/1");
+if (isUser(data)) {
+    console.log(data.name);  // TS knows `data` is User here
+}
+```
+
+#### `any` vs `unknown` vs `never`
+
+```typescript
+// any — DISABLES type checking (avoid!)
+let x: any = 42;
+x.nonExistent.method();  // no error at compile time, crashes at runtime!
+
+// unknown — type-safe version of any (USE THIS)
+let y: unknown = 42;
+// y.toString();          // ❌ Error: Object is of type 'unknown'
+if (typeof y === "number") {
+    y.toFixed(2);          // ✅ OK after type guard
+}
+
+// never — impossible type (function never returns)
+function throwError(msg: string): never {
+    throw new Error(msg);  // never returns normally
+}
+
+// Exhaustive checking with never
+type Color = "red" | "green" | "blue";
+function getHex(color: Color): string {
+    switch (color) {
+        case "red":   return "#ff0000";
+        case "green": return "#00ff00";
+        case "blue":  return "#0000ff";
+        default:
+            const _exhaustive: never = color;
+            // If you add "yellow" to Color union but forget a case,
+            // this line gives a compile error!
+            return _exhaustive;
+    }
+}
+```
+
+📌 **TLDR:** "TypeScript: use `interface` for object shapes, `type` for unions/intersections. Generics (`<T>`) for reusable type-safe functions. Utility types: `Partial` (optional fields), `Pick`/`Omit` (select/exclude fields), `Record` (key-value types). Type guards narrow `unknown` to specific types. Use `unknown` over `any`, discriminated unions for pattern matching, and `never` for exhaustive checks."
+
+---
+
+### 27.6 React.js — Complete Deep Dive
+
+> **📣 Definition:** _"React is a JavaScript library for building user interfaces. It uses a component-based architecture, a Virtual DOM for efficient updates, and a declarative approach — you describe WHAT the UI should look like, React figures out HOW to update the DOM."_
+
+#### Core Concepts — Components, JSX, Props
+
+```
+Props (Properties) — What, Why, Where:
+
+  WHAT: Props are READ-ONLY data passed from a parent component to a child.
+        Think of them as function arguments — a component is just a function
+        that takes props and returns UI.
+
+        function UserCard({ user, onEdit }) { ... }
+                           ↑        ↑
+                        data prop   callback prop (child → parent communication)
+
+  WHY:
+    1. Unidirectional data flow:  data flows DOWN (parent → child) only
+       → makes apps predictable, easier to debug
+       → child can't modify props directly (read-only)
+    2. Reusability:  same component, different data
+       → <UserCard user={alice} />  and  <UserCard user={bob} />
+    3. Separation of concerns:  parent decides WHAT data, child decides HOW to render
+
+  WHERE:
+    1. Parent → Child (data):   <UserCard user={userData} />
+    2. Child → Parent (events): <UserCard onDelete={(id) => handleDelete(id)} />
+       → parent passes a FUNCTION as prop, child calls it
+    3. Render props:            <DataFetcher render={(data) => <Chart data={data} />} />
+    4. Children:                <Card><p>I'm a children prop!</p></Card>
+
+  PROP DRILLING (the problem):
+    App → Dashboard → Sidebar → UserMenu → Avatar (needs user data)
+    Passing `user` through Dashboard, Sidebar, UserMenu just to reach Avatar
+    → tedious, brittle, unnecessary coupling
+
+    Solutions:
+      React:   Context API, Zustand, Redux
+      Vue:     provide/inject, Pinia
+      Angular: Services with DI, Signals
+
+  Cross-framework comparison:
+  ┌───────────┬──────────────────────┬────────────────────────────────┐
+  │ Framework │ Data In (parent→child)│ Events Out (child→parent)     │
+  ├───────────┼──────────────────────┼────────────────────────────────┤
+  │ React     │ props (JSX attrs)    │ callback props (onClick={fn}) │
+  │ Vue       │ defineProps()        │ defineEmits() / emit('event') │
+  │ Angular   │ @Input() decorator   │ @Output() + EventEmitter      │
+  └───────────┴──────────────────────┴────────────────────────────────┘
+```
+
+```jsx
+// === Functional Component (the only way to write React in 2026) ===
+function UserCard({ user, onEdit }) {
+    return (
+        <div className="card">              {/* className, not class */}
+            <h2>{user.name}</h2>            {/* JS expressions in {} */}
+            <p>{user.email}</p>
+            <button onClick={() => onEdit(user.id)}>Edit</button>
+        </div>
+    );
+}
+
+// === JSX = JavaScript + XML ===
+// JSX is NOT HTML — it's syntactic sugar for React.createElement()
+// <div className="card"> → React.createElement("div", { className: "card" }, ...)
+// Key differences from HTML:
+//   className (not class), htmlFor (not for), onClick (camelCase)
+//   Self-closing tags required: <img />, <input />, <br />
+//   Must return ONE root element (use <> fragments)
+
+// === Props — data flows DOWN (parent → child) ===
+function App() {
+    const [users, setUsers] = useState([]);
+    return (
+        <>
+            {users.map(user => (
+                <UserCard
+                    key={user.id}           // key is CRITICAL for reconciliation
+                    user={user}
+                    onEdit={(id) => console.log(id)}
+                />
+            ))}
+        </>
+    );
+}
+
+// === Children prop ===
+function Card({ children, title }) {
+    return (
+        <div className="card">
+            <h2>{title}</h2>
+            <div className="card-body">{children}</div>
+        </div>
+    );
+}
+// <Card title="Settings"><p>Content goes here</p></Card>
+
+// === Conditional rendering ===
+function Status({ isOnline }) {
+    return (
+        <div>
+            {isOnline ? <span className="online">●</span> : <span className="offline">●</span>}
+            {isOnline && <p>User is currently active</p>}  {/* short-circuit */}
+        </div>
+    );
+}
+```
+
+#### Hooks — State & Side Effects
+
+```jsx
+// === useState — local component state ===
+function Counter() {
+    const [count, setCount] = useState(0);  // [value, setter]
+
+    return (
+        <div>
+            <p>Count: {count}</p>
+            <button onClick={() => setCount(count + 1)}>+</button>
+            {/* ⚠️ For state based on previous state, use the FUNCTION form: */}
+            <button onClick={() => setCount(prev => prev + 1)}>+</button>
+        </div>
+    );
+}
+
+// === useEffect — side effects (data fetching, subscriptions, DOM) ===
+function UserProfile({ userId }) {
+    const [user, setUser] = useState(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        // This runs AFTER render (not during!)
+        let cancelled = false;  // cleanup flag for race conditions
+
+        async function fetchUser() {
+            setLoading(true);
+            const res = await fetch(`/api/users/${userId}`);
+            const data = await res.json();
+            if (!cancelled) {
+                setUser(data);
+                setLoading(false);
+            }
+        }
+        fetchUser();
+
+        return () => { cancelled = true; };  // CLEANUP function
+    }, [userId]);  // dependency array — re-run when userId changes
+
+    if (loading) return <p>Loading...</p>;
+    return <h1>{user.name}</h1>;
+}
+```
+
+```
+useEffect Dependency Array — the most common source of bugs:
+
+  useEffect(() => { ... });              // runs after EVERY render (usually wrong!)
+  useEffect(() => { ... }, []);          // runs ONCE after initial render (mount)
+  useEffect(() => { ... }, [a, b]);      // runs when `a` or `b` changes
+
+  Lifecycle mapping (class → hooks):
+    componentDidMount    → useEffect(() => {}, [])
+    componentDidUpdate   → useEffect(() => {}, [dep])
+    componentWillUnmount → useEffect(() => { return () => cleanup(); }, [])
+
+  Common mistake: missing dependencies
+    const [count, setCount] = useState(0);
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCount(count + 1);  // ❌ stale closure! `count` is always 0
+        }, 1000);
+        return () => clearInterval(timer);
+    }, []);  // `count` is missing from deps
+
+    // FIX: use function updater
+    setCount(prev => prev + 1);  // ✅ always uses latest value
+```
+
+```jsx
+// === useReducer — complex state logic ===
+function reducer(state, action) {
+    switch (action.type) {
+        case "INCREMENT": return { count: state.count + 1 };
+        case "DECREMENT": return { count: state.count - 1 };
+        case "RESET":     return { count: 0 };
+        default: throw new Error(`Unknown action: ${action.type}`);
+    }
+}
+
+function Counter() {
+    const [state, dispatch] = useReducer(reducer, { count: 0 });
+    return (
+        <div>
+            <p>{state.count}</p>
+            <button onClick={() => dispatch({ type: "INCREMENT" })}>+</button>
+            <button onClick={() => dispatch({ type: "RESET" })}>Reset</button>
+        </div>
+    );
+}
+// Use useReducer when: state logic is complex, state depends on previous state,
+// multiple sub-values, or you need to pass dispatch down (avoids prop drilling)
+
+// === useRef — mutable value that persists across renders (no re-render!) ===
+function TextInput() {
+    const inputRef = useRef(null);
+    const renderCount = useRef(0);
+
+    useEffect(() => {
+        renderCount.current++;  // mutating ref does NOT trigger re-render
+    });
+
+    return (
+        <div>
+            <input ref={inputRef} />
+            <button onClick={() => inputRef.current.focus()}>Focus</button>
+            <p>Rendered {renderCount.current} times</p>
+        </div>
+    );
+}
+// useRef use cases:
+//   - DOM element access (inputRef.current.focus())
+//   - Storing previous values
+//   - Storing timer IDs
+//   - Any mutable value that shouldn't trigger re-renders
+```
+
+#### Performance Hooks — useMemo, useCallback, React.memo
+
+```jsx
+// === useMemo — memoize expensive COMPUTATIONS ===
+function ProductList({ products, filter }) {
+    // ❌ BAD: filters on EVERY render (even when data hasn't changed)
+    // const filtered = products.filter(p => p.category === filter);
+
+    // ✅ GOOD: only recomputes when products or filter changes
+    const filtered = useMemo(() => {
+        return products.filter(p => p.category === filter);
+    }, [products, filter]);
+
+    return <ul>{filtered.map(p => <li key={p.id}>{p.name}</li>)}</ul>;
+}
+
+// === useCallback — memoize FUNCTIONS (stable reference) ===
+function Parent() {
+    const [count, setCount] = useState(0);
+
+    // ❌ Without useCallback: new function created every render
+    //    → Child re-renders even if nothing changed
+    // const handleClick = () => setCount(c => c + 1);
+
+    // ✅ With useCallback: same function reference across renders
+    const handleClick = useCallback(() => {
+        setCount(c => c + 1);
+    }, []);  // empty deps → function never changes
+
+    return <Child onClick={handleClick} />;
+}
+
+// === React.memo — skip re-render if props haven't changed ===
+const Child = React.memo(function Child({ onClick }) {
+    console.log("Child rendered");
+    return <button onClick={onClick}>Click me</button>;
+});
+// Only re-renders when `onClick` reference changes
+// That's why useCallback matters — it keeps the reference stable!
+```
+
+```
+When to optimize (and when NOT to):
+
+  ❌ DON'T prematurely optimize — React is fast by default
+  ❌ DON'T wrap everything in useMemo/useCallback
+  ❌ DON'T use React.memo on components that always get new props
+
+  ✅ DO optimize when you have measurable performance issues:
+     - Expensive computations (sorting/filtering large lists) → useMemo
+     - Callbacks passed to memoized children → useCallback
+     - Components that re-render often with same props → React.memo
+     - Large lists → virtualization (react-window, @tanstack/virtual)
+
+  React 19 Compiler: auto-memoizes! No more manual useMemo/useCallback
+```
+
+#### Virtual DOM & Reconciliation
+
+```
+What happens when state changes:
+
+  1. State update (setState) → React schedules re-render
+  2. React calls your component function → returns new JSX (Virtual DOM)
+  3. React DIFFS new Virtual DOM vs previous Virtual DOM
+  4. Diffing finds minimal changes needed
+  5. React applies ONLY those changes to the real DOM
+
+  Diffing Algorithm (O(n)):
+    - Different element type → destroy old, create new (div → span)
+    - Same element type → update only changed attributes
+    - Lists → uses `key` prop to match old and new items
+
+  Why keys matter in lists:
+    ❌ No key (or index as key):
+       React can't tell which item moved/was added/was removed
+       → re-renders entire list on every change
+
+    ✅ Unique stable key:
+       <li key={user.id}> → React tracks by key
+       → only affected items re-render
+
+    ❌ NEVER use array index as key for dynamic lists
+       (inserting at beginning would re-render ALL items)
+```
+
+#### Fiber Architecture
+
+```
+Fiber = React's reconciliation engine (introduced in React 16)
+
+  Before Fiber (Stack Reconciler):
+    Rendering was SYNCHRONOUS and RECURSIVE
+    Once started, React had to finish the entire tree
+    → Long renders blocked the main thread → UI freezes
+
+  After Fiber:
+    Rendering is ASYNCHRONOUS and INTERRUPTIBLE
+    React breaks work into small "units" (Fiber nodes)
+    Between each unit, React can:
+      - Pause and check for higher-priority work
+      - Resume where it left off
+      - Abort and start over
+      - Reuse work from previous renders
+
+  Priority levels (Concurrent Features):
+    1. Immediate:    user input, clicks        (highest)
+    2. User-blocking: hover, text input
+    3. Normal:       data fetching, state update
+    4. Low:          analytics, logging
+    5. Idle:         prefetching               (lowest)
+
+  startTransition(() => {
+      setSearchResults(expensiveFilter(query));
+  });
+  // Marks this state update as LOW priority
+  // User input stays responsive while results update in background
+```
+
+#### React 19 Features — Modern React (2025+)
+
+```jsx
+// === React Compiler (auto-memoization!) ===
+// Automatically adds useMemo, useCallback, React.memo
+// You write SIMPLE code, compiler optimizes it
+// No more manual memoization needed!
+
+// === Server Components (RSC) ===
+// Server Component — runs ONLY on the server
+// async function UserList() {  ← can be async!
+//     const users = await db.query("SELECT * FROM users");  ← direct DB access!
+//     return (
+//         <ul>
+//             {users.map(u => <li key={u.id}>{u.name}</li>)}
+//         </ul>
+//     );
+// }
+// Benefits:
+//   - Zero bundle size (code stays on server)
+//   - Direct database/filesystem access
+//   - No useState, no useEffect, no browser APIs
+//   - Can render Client Components as children
+
+// Client Component — runs on the client (interactive)
+"use client";  // ← this directive marks it as a client component
+function LikeButton({ postId }) {
+    const [liked, setLiked] = useState(false);
+    return <button onClick={() => setLiked(!liked)}>❤️</button>;
+}
+
+// === Actions (form handling) ===
+// Server Actions: functions that run on the server, called from client
+"use server";
+async function createUser(formData) {
+    const name = formData.get("name");
+    await db.insert({ name });
+    revalidatePath("/users");
+}
+
+// In component:
+function SignupForm() {
+    return (
+        <form action={createUser}>
+            <input name="name" />
+            <button type="submit">Sign Up</button>
+        </form>
+    );
+}
+
+// === use() hook — read promises and context ===
+function UserProfile({ userPromise }) {
+    const user = use(userPromise);  // suspends until resolved
+    return <h1>{user.name}</h1>;
+}
+// Replaces the useEffect + useState pattern for data fetching
+```
+
+#### Context API & State Management
+
+```jsx
+// === Context API — share data across component tree ===
+const ThemeContext = createContext("light");
+
+function App() {
+    const [theme, setTheme] = useState("dark");
+    return (
+        <ThemeContext.Provider value={{ theme, setTheme }}>
+            <Navbar />
+            <Main />
+        </ThemeContext.Provider>
+    );
+}
+
+function Navbar() {
+    const { theme, setTheme } = useContext(ThemeContext);
+    return <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+        Current: {theme}
+    </button>;
+}
+
+// ⚠️ Context pitfall: ALL consumers re-render when context value changes
+// Fine for: theme, locale, auth state (infrequent changes)
+// BAD for: frequently updating state (forms, timers, real-time data)
+```
+
+```
+State Management — when to use what:
+
+  ┌──────────────────────┬─────────────────────────────────────────┐
+  │ Tool                 │ Use When                                 │
+  ├──────────────────────┼─────────────────────────────────────────┤
+  │ useState             │ Local component state (form inputs)      │
+  │ useReducer           │ Complex local state (multi-step forms)   │
+  │ Context API          │ Infrequent global state (theme, auth)    │
+  │ Zustand              │ Simple global state, minimal boilerplate │
+  │ Redux Toolkit        │ Large apps, complex state, devtools      │
+  │ TanStack Query       │ Server state (API data, caching, sync)   │
+  │ Jotai / Recoil       │ Atomic state (fine-grained updates)      │
+  └──────────────────────┴─────────────────────────────────────────┘
+
+  Key insight: "server state" ≠ "client state"
+    Server state: data from API (users, posts) → TanStack Query
+    Client state: UI state (modals, forms) → useState/Zustand
+    Don't use Redux for everything!
+```
+
+#### Error Boundaries
+
+```jsx
+// Error boundaries catch JavaScript errors in the component tree
+// They are the ONLY remaining use case for class components
+
+class ErrorBoundary extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = { hasError: false, error: null };
+    }
+
+    static getDerivedStateFromError(error) {
+        return { hasError: true, error };  // update state to show fallback
+    }
+
+    componentDidCatch(error, errorInfo) {
+        // Log to error reporting service (Sentry, DataDog)
+        logErrorToService(error, errorInfo);
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return <div className="error-fallback">
+                <h2>Something went wrong</h2>
+                <button onClick={() => this.setState({ hasError: false })}>
+                    Try Again
+                </button>
+            </div>;
+        }
+        return this.props.children;
+    }
+}
+
+// Usage — wrap around any subtree
+<ErrorBoundary>
+    <UserProfile />
+</ErrorBoundary>
+
+// Error boundaries do NOT catch:
+//   - Event handlers (use try/catch inside)
+//   - Async code (useEffect errors)
+//   - Server-side rendering
+//   - Errors in the boundary itself
+```
+
+#### Common Patterns
+
+```jsx
+// === Controlled vs Uncontrolled Components ===
+// Controlled: React owns the state (single source of truth)
+function ControlledInput() {
+    const [value, setValue] = useState("");
+    return <input value={value} onChange={e => setValue(e.target.value)} />;
+}
+
+// Uncontrolled: DOM owns the state (use ref to read)
+function UncontrolledInput() {
+    const inputRef = useRef(null);
+    const handleSubmit = () => console.log(inputRef.current.value);
+    return <input ref={inputRef} defaultValue="initial" />;
+}
+// Controlled = more React-idiomatic, validation easier
+// Uncontrolled = simpler for file inputs, third-party libraries
+
+// === Custom Hooks — reusable stateful logic ===
+function useLocalStorage(key, initialValue) {
+    const [value, setValue] = useState(() => {
+        const stored = localStorage.getItem(key);
+        return stored ? JSON.parse(stored) : initialValue;
+    });
+
+    useEffect(() => {
+        localStorage.setItem(key, JSON.stringify(value));
+    }, [key, value]);
+
+    return [value, setValue];
+}
+// Usage: const [theme, setTheme] = useLocalStorage("theme", "dark");
+
+// === Compound Components (like <select>/<option>) ===
+function Tabs({ children, defaultTab }) {
+    const [activeTab, setActiveTab] = useState(defaultTab);
+    return (
+        <TabContext.Provider value={{ activeTab, setActiveTab }}>
+            <div className="tabs">{children}</div>
+        </TabContext.Provider>
+    );
+}
+Tabs.Tab = function Tab({ name, children }) {
+    const { activeTab, setActiveTab } = useContext(TabContext);
+    return <button className={activeTab === name ? "active" : ""}
+        onClick={() => setActiveTab(name)}>{children}</button>;
+};
+Tabs.Panel = function Panel({ name, children }) {
+    const { activeTab } = useContext(TabContext);
+    return activeTab === name ? <div>{children}</div> : null;
+};
+// Usage: <Tabs defaultTab="settings">
+//   <Tabs.Tab name="profile">Profile</Tabs.Tab>
+//   <Tabs.Tab name="settings">Settings</Tabs.Tab>
+//   <Tabs.Panel name="settings">Settings content</Tabs.Panel>
+// </Tabs>
+```
+
+📌 **TLDR:** "React = component-based UI library with Virtual DOM. Use `useState` for simple state, `useReducer` for complex. `useEffect` for side effects (fetch, subscribe) — dependency array controls when it runs. `useMemo`/`useCallback` for performance (but don't prematurely optimize — React 19 Compiler auto-memoizes). Keys must be stable + unique in lists. Fiber enables interruptible rendering. Server Components = zero bundle size, direct DB access. Use Context for theme/auth, TanStack Query for API data, Zustand for global UI state."
+
+---
+
+### 27.7 Vue.js — Complete Deep Dive
+
+> **📣 Definition:** _"Vue is a progressive JavaScript framework for building user interfaces. 'Progressive' means you can adopt it incrementally — from a simple script tag to a full SPA. Vue 3 uses a Proxy-based reactivity system and the Composition API for better code organization and TypeScript support."_
+
+#### Core Concepts — SFC, Template Syntax, Directives
+
+```vue
+<!-- Single File Component (SFC) — .vue file -->
+<script setup>
+import { ref, computed } from 'vue'
+
+// <script setup> is Vue 3's preferred way — less boilerplate
+const count = ref(0)
+const doubled = computed(() => count.value * 2)
+
+function increment() {
+    count.value++  // .value required for ref in JS (not in template!)
+}
+</script>
+
+<template>
+    <div class="counter">
+        <h1>Count: {{ count }}</h1>         <!-- text interpolation -->
+        <p>Doubled: {{ doubled }}</p>
+
+        <!-- Directives (v-*) -->
+        <button @click="increment">+</button>        <!-- v-on shorthand: @ -->
+        <button v-on:click="increment">+</button>    <!-- full form -->
+
+        <input v-model="searchQuery" />               <!-- two-way binding -->
+        <a :href="url">Link</a>                       <!-- v-bind shorthand: : -->
+
+        <!-- Conditional rendering -->
+        <p v-if="count > 10">High!</p>
+        <p v-else-if="count > 5">Medium</p>
+        <p v-else>Low</p>
+        <p v-show="isVisible">I toggle display:none</p>  <!-- v-show vs v-if -->
+
+        <!-- List rendering -->
+        <ul>
+            <li v-for="item in items" :key="item.id">
+                {{ item.name }}
+            </li>
+        </ul>
+    </div>
+</template>
+
+<style scoped>
+/* scoped = styles only apply to this component (no leaking!) */
+.counter { padding: 20px; }
+</style>
+```
+
+```
+v-if vs v-show:
+  v-if:   completely adds/removes from DOM (lazy — good for rarely shown)
+  v-show: toggles display:none (eager — good for frequently toggled)
+
+v-for requires :key (same as React — for efficient diffing)
+NEVER use v-if and v-for on the same element (v-for has higher priority in Vue 2, ambiguous)
+```
+
+#### Options API vs Composition API
+
+```javascript
+// === Options API (Vue 2 style — still works, but not preferred) ===
+export default {
+    data() {
+        return { count: 0, user: null };  // reactive state
+    },
+    computed: {
+        doubled() { return this.count * 2; },  // derived state
+    },
+    methods: {
+        increment() { this.count++; },  // functions
+    },
+    watch: {
+        count(newVal, oldVal) {          // side effects
+            console.log(`Count changed: ${oldVal} → ${newVal}`);
+        },
+    },
+    mounted() {                          // lifecycle
+        this.fetchUser();
+    },
+};
+
+// Problems with Options API:
+//   1. Related logic is SPLIT across data/methods/computed/watch
+//   2. "this" everywhere — TypeScript inference is poor
+//   3. Can't extract/reuse logic easily (mixins have issues)
+
+// === Composition API (Vue 3 — preferred) ===
+import { ref, computed, watch, onMounted } from 'vue'
+
+// <script setup> — the modern way (auto-exports everything)
+const count = ref(0)
+const doubled = computed(() => count.value * 2)
+
+function increment() { count.value++ }
+
+watch(count, (newVal, oldVal) => {
+    console.log(`Count changed: ${oldVal} → ${newVal}`)
+})
+
+onMounted(() => {
+    fetchUser()
+})
+
+// Benefits:
+//   1. Related logic is TOGETHER (data + methods + effects in one place)
+//   2. No `this` — pure functions → excellent TypeScript support
+//   3. Extract logic into "composables" (like React custom hooks)
+```
+
+#### Reactivity System — How Vue Tracks Changes
+
+```javascript
+// Vue 3 uses JavaScript Proxy to track reads and writes
+
+// === ref() — for primitives (and objects) ===
+const count = ref(0)
+count.value++          // .value required in JavaScript
+// In template: {{ count }} — .value NOT needed (auto-unwrapped)
+
+const user = ref({ name: "Tushar", age: 30 })
+user.value.name = "Updated"  // deep reactivity by default
+
+// === reactive() — for objects/arrays only ===
+const state = reactive({
+    count: 0,
+    users: [],
+})
+state.count++          // NO .value needed — direct access
+state.users.push({ name: "Alice" })
+
+// === ref vs reactive — when to use which? ===
+// ref:      works with ANY type (primitives + objects)
+//           requires .value in JS, auto-unwraps in template
+//           can be reassigned: myRef.value = newValue
+// reactive: only works with objects/arrays
+//           no .value needed
+//           CANNOT be reassigned: state = newState ← breaks reactivity!
+// Rule of thumb: use ref() for everything, it's more flexible
+
+// === Reactivity gotchas ===
+// Destructuring BREAKS reactivity!
+const { count } = reactive({ count: 0 })  // ❌ count is now a plain number!
+
+// Fix: use toRefs()
+const state = reactive({ count: 0, name: "Vue" })
+const { count, name } = toRefs(state)     // ✅ count and name are still reactive refs
+
+// Replacing reactive object BREAKS reactivity!
+let state = reactive({ count: 0 })
+state = reactive({ count: 1 })  // ❌ the component still watches the OLD object
+
+// Fix: use ref() for objects that might be replaced
+const state = ref({ count: 0 })
+state.value = { count: 1 }  // ✅ works fine
+```
+
+```
+Vue 3 Reactivity (under the hood):
+
+  const state = reactive({ count: 0 })
+  
+  Vue wraps the object in a JavaScript Proxy:
+    new Proxy(target, {
+      get(target, key) {
+        track(target, key)    // "someone is reading `count`"
+        return target[key]
+      },
+      set(target, key, value) {
+        target[key] = value
+        trigger(target, key)  // "count changed, update all watchers"
+        return true
+      }
+    })
+
+  When you read `state.count` in a template or computed:
+    → Vue tracks which component/computed depends on `count`
+  When you write `state.count = 1`:
+    → Vue triggers updates ONLY for components that depend on `count`
+
+  Vue 2 used Object.defineProperty() → couldn't detect new properties
+  Vue 3 uses Proxy → detects everything (add, delete, array mutations)
+```
+
+#### Lifecycle Hooks
+
+```javascript
+import {
+    onBeforeMount,
+    onMounted,
+    onBeforeUpdate,
+    onUpdated,
+    onBeforeUnmount,
+    onUnmounted,
+} from 'vue'
+
+// onBeforeMount  — before initial DOM render
+// onMounted      — after component is added to DOM (fetch data, init libraries)
+// onBeforeUpdate — before re-render (reactive state changed)
+// onUpdated      — after re-render
+// onBeforeUnmount — before component removal (cleanup subscriptions)
+// onUnmounted    — after component removed from DOM
+
+onMounted(() => {
+    console.log("Component mounted — DOM is available")
+    const chart = new Chart(chartRef.value)  // access DOM element
+
+    // WebSocket setup
+    const ws = new WebSocket("wss://api.example.com")
+    ws.onmessage = (event) => { messages.value.push(event.data) }
+
+    onUnmounted(() => {
+        ws.close()  // cleanup — like React's useEffect cleanup
+    })
+})
+```
+
+```
+Lifecycle comparison (Vue Options → Composition → React):
+  ┌───────────────────┬──────────────────┬─────────────────────────┐
+  │ Vue Options       │ Vue Composition  │ React Hooks             │
+  ├───────────────────┼──────────────────┼─────────────────────────┤
+  │ beforeCreate      │ (setup itself)   │ —                       │
+  │ created           │ (setup itself)   │ —                       │
+  │ mounted           │ onMounted        │ useEffect(() => {}, []) │
+  │ updated           │ onUpdated        │ useEffect(() => {})     │
+  │ beforeUnmount     │ onBeforeUnmount  │ useEffect return fn     │
+  │ unmounted         │ onUnmounted      │ useEffect return fn     │
+  └───────────────────┴──────────────────┴─────────────────────────┘
+```
+
+#### Computed & Watch
+
+```javascript
+import { ref, computed, watch, watchEffect } from 'vue'
+
+const firstName = ref("Tushar")
+const lastName = ref("Gupta")
+
+// === computed() — cached derived state ===
+const fullName = computed(() => `${firstName.value} ${lastName.value}`)
+// Only recomputes when firstName or lastName changes
+// Cached: reading fullName 100 times = 1 computation
+// Use for: derived data (filtered lists, formatted values, totals)
+
+// === watch() — react to specific changes (side effects) ===
+watch(firstName, (newVal, oldVal) => {
+    console.log(`Name changed: ${oldVal} → ${newVal}`)
+    // Side effect: API call, analytics event, etc.
+})
+
+// Watch multiple sources
+watch([firstName, lastName], ([newFirst, newLast], [oldFirst, oldLast]) => {
+    console.log(`Full name: ${newFirst} ${newLast}`)
+})
+
+// Deep watch (for objects)
+const user = ref({ name: "Tushar", prefs: { theme: "dark" } })
+watch(user, (newVal) => {
+    console.log("User changed (deep)")
+}, { deep: true })  // without deep, only watches reference changes
+
+// === watchEffect() — auto-tracks dependencies ===
+watchEffect(() => {
+    // Automatically tracks firstName.value and lastName.value
+    console.log(`User: ${firstName.value} ${lastName.value}`)
+    // Re-runs whenever ANY reactive dependency inside changes
+})
+
+// watch vs watchEffect:
+//   watch: explicit sources, lazy by default, gives old + new values
+//   watchEffect: auto-tracks, runs immediately, no old/new values
+//   Use watch when you need old vs new comparison
+//   Use watchEffect for simpler "run this whenever deps change"
+```
+
+#### Composables — Reusable Stateful Logic
+
+```javascript
+// === Composable (like React custom hooks) ===
+// Convention: use + descriptive name (useFetch, useAuth, useLocalStorage)
+
+// composables/useFetch.js
+import { ref, watchEffect } from 'vue'
+
+export function useFetch(url) {
+    const data = ref(null)
+    const error = ref(null)
+    const loading = ref(true)
+
+    watchEffect(async () => {
+        loading.value = true
+        error.value = null
+        try {
+            const res = await fetch(url.value || url)
+            data.value = await res.json()
+        } catch (err) {
+            error.value = err.message
+        } finally {
+            loading.value = false
+        }
+    })
+
+    return { data, error, loading }
+}
+
+// Usage in component:
+// <script setup>
+// import { useFetch } from '@/composables/useFetch'
+// const { data: users, loading, error } = useFetch('/api/users')
+// </script>
+
+// === More composables ===
+// composables/useLocalStorage.js
+export function useLocalStorage(key, defaultValue) {
+    const stored = localStorage.getItem(key)
+    const data = ref(stored ? JSON.parse(stored) : defaultValue)
+
+    watch(data, (newVal) => {
+        localStorage.setItem(key, JSON.stringify(newVal))
+    }, { deep: true })
+
+    return data
+}
+
+// composables/useDebounce.js
+export function useDebounce(value, delay = 300) {
+    const debounced = ref(value.value)
+    let timeout
+
+    watch(value, (newVal) => {
+        clearTimeout(timeout)
+        timeout = setTimeout(() => {
+            debounced.value = newVal
+        }, delay)
+    })
+
+    return debounced
+}
+```
+
+#### Pinia — State Management
+
+```javascript
+// Pinia = official Vue 3 state management (replaced Vuex)
+// stores/userStore.js
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+
+// Composition API style (preferred)
+export const useUserStore = defineStore('user', () => {
+    // State
+    const user = ref(null)
+    const token = ref(localStorage.getItem('token'))
+
+    // Getters (computed)
+    const isAuthenticated = computed(() => !!token.value)
+    const displayName = computed(() => user.value?.name ?? 'Guest')
+
+    // Actions
+    async function login(credentials) {
+        const res = await fetch('/api/login', {
+            method: 'POST',
+            body: JSON.stringify(credentials),
+        })
+        const data = await res.json()
+        user.value = data.user
+        token.value = data.token
+        localStorage.setItem('token', data.token)
+    }
+
+    function logout() {
+        user.value = null
+        token.value = null
+        localStorage.removeItem('token')
+    }
+
+    return { user, token, isAuthenticated, displayName, login, logout }
+})
+
+// Usage in component:
+// <script setup>
+// import { useUserStore } from '@/stores/userStore'
+// const userStore = useUserStore()
+// userStore.login({ email, password })
+// {{ userStore.displayName }}
+// </script>
+```
+
+```
+Pinia vs Vuex:
+  Pinia:  no mutations (actions only), TypeScript-first, simpler API,
+          Composition API support, devtools support, lightweight (1KB)
+  Vuex:   mutations + actions, verbose, worse TS support (legacy)
+  → Always use Pinia for new Vue 3 projects
+```
+
+#### Provide / Inject — Dependency Injection
+
+```javascript
+// === Provide (ancestor component) ===
+import { provide, ref } from 'vue'
+
+// In parent component:
+const theme = ref('dark')
+provide('theme', theme)           // provide reactive value
+provide('updateTheme', (t) => { theme.value = t })  // provide function
+
+// === Inject (any descendant component) ===
+import { inject } from 'vue'
+
+// In child/grandchild component:
+const theme = inject('theme')                        // use provided value
+const updateTheme = inject('updateTheme')            // use provided function
+const fallback = inject('nonExistent', 'defaultVal') // with default
+
+// Use cases:
+//   - Theme/locale across deeply nested components
+//   - Plugin systems
+//   - Avoiding prop drilling (same as React Context)
+// Unlike Context: no Provider component needed in template
+```
+
+#### Performance Optimization
+
+```javascript
+// === defineAsyncComponent — lazy load components ===
+import { defineAsyncComponent } from 'vue'
+
+const HeavyChart = defineAsyncComponent(() =>
+    import('./components/HeavyChart.vue')
+)
+// Component JS is only loaded when it's first rendered
+
+// With loading/error states:
+const AsyncComp = defineAsyncComponent({
+    loader: () => import('./HeavyComponent.vue'),
+    loadingComponent: LoadingSpinner,
+    errorComponent: ErrorDisplay,
+    delay: 200,   // show loading after 200ms
+    timeout: 3000, // error after 3s
+})
+
+// === v-memo — cache template sub-trees ===
+// <div v-memo="[item.id, item.selected]">
+//     {{ item.name }} — only re-renders when id or selected changes
+// </div>
+
+// === shallowRef — avoid deep reactivity for large objects ===
+import { shallowRef, triggerRef } from 'vue'
+
+const largeList = shallowRef(generateBigArray())
+// Only triggers on .value reassignment, NOT nested property changes
+largeList.value = [...largeList.value, newItem]  // triggers update
+largeList.value[0].name = "changed"              // does NOT trigger!
+triggerRef(largeList)                              // manual trigger
+
+// === Virtual scrolling — render only visible items ===
+// Use @tanstack/vue-virtual or vue-virtual-scroller for 10,000+ items
+```
+
+📌 **TLDR:** "Vue 3 uses Composition API with `<script setup>` for less boilerplate. Reactivity: `ref()` for everything (needs `.value` in JS, auto-unwraps in template), `reactive()` for objects only. Computed for derived data (cached), watch/watchEffect for side effects. Composables = reusable stateful logic (like React hooks). Pinia for state management (replaces Vuex). Provide/inject for dependency injection. Don't destructure reactive objects without `toRefs()`. Use `defineAsyncComponent` for lazy loading."
+
+---
+
+### 27.8 Angular — Complete Deep Dive
+
+> **📣 Definition:** _"Angular is a full-featured, opinionated framework for building enterprise-scale web applications. Unlike React (library) and Vue (progressive framework), Angular provides EVERYTHING out of the box: routing, forms, HTTP client, DI, testing — with strong conventions and TypeScript as a first-class citizen."_
+
+#### Core Concepts — Components, Modules, Standalone
+
+```typescript
+// === Traditional Angular Component (with NgModule) ===
+// Every component has: TypeScript class + HTML template + CSS styles + decorator
+
+@Component({
+    selector: 'app-user-card',   // HTML tag: <app-user-card>
+    templateUrl: './user-card.component.html',
+    styleUrls: ['./user-card.component.css'],
+})
+export class UserCardComponent {
+    @Input() user!: User;           // data FROM parent
+    @Output() edit = new EventEmitter<number>();  // events TO parent
+
+    onEdit() {
+        this.edit.emit(this.user.id);
+    }
+}
+
+// NgModule — organizes components, services, imports
+@NgModule({
+    declarations: [UserCardComponent],  // components belonging to this module
+    imports: [CommonModule],            // other modules needed
+    exports: [UserCardComponent],       // components available to other modules
+})
+export class UserModule {}
+
+// === Standalone Components (Angular 15+ — the modern way) ===
+@Component({
+    selector: 'app-user-card',
+    standalone: true,                    // no NgModule needed!
+    imports: [CommonModule, RouterLink], // import directly what you need
+    template: `
+        <div class="card">
+            <h2>{{ user.name }}</h2>
+            <p>{{ user.email }}</p>
+            <button (click)="onEdit()">Edit</button>
+        </div>
+    `,
+})
+export class UserCardComponent {
+    @Input() user!: User;
+    @Output() edit = new EventEmitter<number>();
+    onEdit() { this.edit.emit(this.user.id); }
+}
+
+// Why standalone?
+//   - No NgModule boilerplate
+//   - Better tree shaking (only imports what's used)
+//   - Simpler mental model
+//   - Can be lazy-loaded individually
+```
+
+#### Data Binding & Template Syntax
+
+```html
+<!-- Angular template syntax -->
+
+<!-- Interpolation (one-way: component → view) -->
+<h1>{{ user.name }}</h1>
+<p>{{ user.age | number }}</p>       <!-- pipes for formatting -->
+
+<!-- Property Binding (one-way: component → element) -->
+<img [src]="user.avatar" [alt]="user.name" />
+<button [disabled]="isLoading">Submit</button>
+
+<!-- Event Binding (one-way: element → component) -->
+<button (click)="onSubmit()">Submit</button>
+<input (input)="onSearch($event)" />
+<form (ngSubmit)="onFormSubmit()">
+
+<!-- Two-Way Binding (banana-in-a-box syntax) -->
+<input [(ngModel)]="searchQuery" />
+<!-- Equivalent to: [ngModel]="searchQuery" (ngModelChange)="searchQuery = $event" -->
+
+<!-- Structural Directives -->
+<div *ngIf="isLoggedIn; else loginTemplate">Welcome!</div>
+<ng-template #loginTemplate><p>Please log in</p></ng-template>
+
+<ul>
+    <li *ngFor="let item of items; let i = index; trackBy: trackById">
+        {{ i + 1 }}. {{ item.name }}
+    </li>
+</ul>
+
+<div [ngSwitch]="user.role">
+    <p *ngSwitchCase="'admin'">Admin Panel</p>
+    <p *ngSwitchCase="'user'">User Dashboard</p>
+    <p *ngSwitchDefault>Guest View</p>
+</div>
+
+<!-- New control flow (Angular 17+ — replacing structural directives) -->
+@if (isLoggedIn) {
+    <p>Welcome!</p>
+} @else {
+    <p>Please log in</p>
+}
+
+@for (item of items; track item.id) {
+    <li>{{ item.name }}</li>
+} @empty {
+    <li>No items found</li>
+}
+
+@switch (user.role) {
+    @case ('admin') { <p>Admin</p> }
+    @case ('user') { <p>User</p> }
+    @default { <p>Guest</p> }
+}
+
+<!-- Pipes (transform data in templates) -->
+<p>{{ birthday | date:'fullDate' }}</p>
+<p>{{ price | currency:'USD' }}</p>
+<p>{{ name | uppercase }}</p>
+<p>{{ data | json }}</p>
+<p>{{ observable$ | async }}</p>    <!-- auto-subscribes and unsubscribes! -->
+```
+
+#### Dependency Injection (DI) — Angular's Superpower
+
+```typescript
+// === Service with DI ===
+@Injectable({
+    providedIn: 'root',  // singleton — available everywhere, tree-shakable
+})
+export class UserService {
+    private http = inject(HttpClient);  // modern inject() function
+
+    getUsers(): Observable<User[]> {
+        return this.http.get<User[]>('/api/users');
+    }
+}
+
+// === inject() vs constructor injection ===
+// Modern (Angular 14+) — preferred
+export class UserComponent {
+    private userService = inject(UserService);   // field injection
+    private router = inject(Router);
+}
+
+// Legacy — constructor injection
+export class UserComponent {
+    constructor(
+        private userService: UserService,
+        private router: Router,
+    ) {}
+}
+
+// === DI Hierarchy — scope control ===
+// Root level: singleton for entire app
+@Injectable({ providedIn: 'root' })  // one instance for all
+
+// Component level: new instance per component
+@Component({
+    providers: [LoggerService],  // new LoggerService for THIS component + children
+})
+
+// Module level: one instance per lazy-loaded module
+@NgModule({
+    providers: [FeatureService],  // one instance for this module
+})
+
+// === Injection Tokens (for non-class values) ===
+const API_URL = new InjectionToken<string>('API_URL');
+
+// Provide
+providers: [{ provide: API_URL, useValue: 'https://api.example.com' }]
+
+// Inject
+const apiUrl = inject(API_URL);  // 'https://api.example.com'
+```
+
+```
+DI Hierarchy (interview diagram):
+
+  Root Injector (providedIn: 'root')     ← app-wide singletons
+       │
+  Module Injector (lazy module providers) ← one per lazy module
+       │
+  Component Injector (providers: [...])   ← one per component instance
+       │
+  Child Component Injector               ← inherits from parent
+
+  Resolution order: check self → check parent → ... → check root → ERROR
+```
+
+#### Angular Signals — Modern Reactivity
+
+```typescript
+// Signals = Angular's reactive primitives (Angular 16+)
+// Simpler than RxJS for synchronous state
+
+import { signal, computed, effect } from '@angular/core';
+
+// === signal() — writable reactive value ===
+const count = signal(0);
+count();          // read: 0
+count.set(5);     // write: 5
+count.update(v => v + 1);  // update based on current value: 6
+
+// === computed() — derived reactive value (read-only) ===
+const doubled = computed(() => count() * 2);
+doubled();        // 12 (auto-tracks count)
+
+// === effect() — side effects when signals change ===
+effect(() => {
+    console.log(`Count is now: ${count()}`);
+    // Runs automatically whenever count changes
+    // Cleaned up when component is destroyed
+});
+
+// === In component template ===
+@Component({
+    template: `
+        <p>Count: {{ count() }}</p>
+        <p>Doubled: {{ doubled() }}</p>
+        <button (click)="increment()">+</button>
+    `,
+})
+export class CounterComponent {
+    count = signal(0);
+    doubled = computed(() => this.count() * 2);
+
+    increment() { this.count.update(v => v + 1); }
+}
+
+// Signals vs RxJS:
+//   Signals: synchronous state, simple, no subscription management
+//   RxJS:    async streams, complex operators, backpressure handling
+//   Use Signals for: component state, simple derived values
+//   Use RxJS for:    HTTP, WebSocket, complex async flows, debounce/throttle
+```
+
+#### Change Detection — How Angular Updates the View
+
+```
+Default Change Detection:
+  Any async event (click, HTTP response, setTimeout) →
+  Angular checks ENTIRE component tree for changes →
+  Updates DOM where bindings changed
+
+  Why it's slow: checks ALL components, even unchanged ones
+
+OnPush Change Detection (PERFORMANCE):
+  Angular only checks when:
+    1. @Input reference changes (not mutation!)
+    2. Event originates from this component or child
+    3. Observable used with async pipe emits
+    4. Signal used in template emits
+    5. Manual: ChangeDetectorRef.markForCheck()
+
+  @Component({
+      changeDetection: ChangeDetectionStrategy.OnPush,  // ← add this
+  })
+
+  Rules for OnPush:
+    ✅ Use immutable data (new objects, not mutations)
+    ✅ Use async pipe for observables
+    ✅ Use signals for state
+    ❌ Don't mutate @Input objects directly
+
+Zoneless Angular (experimental — the future):
+  Zone.js monkey-patches ALL async APIs (setTimeout, Promise, etc.)
+  → overhead + confusing debugging
+
+  Zoneless: Angular uses Signals to know EXACTLY what changed
+  → no monkey-patching, better performance, clearer debugging
+  → provideExperimentalZonelessChangeDetection()
+```
+
+#### RxJS Essentials — Reactive Extensions
+
+```typescript
+// RxJS = library for reactive programming with Observables
+// Angular uses RxJS heavily for: HTTP, Router, Forms, WebSocket
+
+import { Observable, Subject, BehaviorSubject, of, from } from 'rxjs';
+import { map, filter, switchMap, mergeMap, catchError, debounceTime, distinctUntilChanged, takeUntil } from 'rxjs/operators';
+
+// === Observable basics ===
+// Observable = lazy stream of values over time
+const numbers$ = of(1, 2, 3, 4, 5);  // $ suffix = observable convention
+numbers$.pipe(
+    filter(n => n > 2),
+    map(n => n * 10),
+).subscribe(val => console.log(val));  // 30, 40, 50
+
+// === HTTP with RxJS (the Angular way) ===
+@Injectable({ providedIn: 'root' })
+export class UserService {
+    private http = inject(HttpClient);
+
+    getUsers(): Observable<User[]> {
+        return this.http.get<User[]>('/api/users').pipe(
+            catchError(err => {
+                console.error('Failed to fetch users', err);
+                return of([]);  // return empty array on error
+            }),
+        );
+    }
+
+    searchUsers(query: string): Observable<User[]> {
+        return this.http.get<User[]>(`/api/users?q=${query}`);
+    }
+}
+
+// === Key operators (interview favorites!) ===
+
+// switchMap — cancel previous, switch to new (use for search/autocomplete)
+this.searchControl.valueChanges.pipe(
+    debounceTime(300),
+    distinctUntilChanged(),
+    switchMap(query => this.userService.searchUsers(query)),
+    // If user types fast, previous HTTP requests are CANCELLED
+).subscribe(results => this.users = results);
+
+// mergeMap — run all in parallel (use for batch operations)
+// concatMap — run one at a time in order (use for sequential operations)
+// exhaustMap — ignore new while current is running (use for submit buttons)
+
+// === Subject & BehaviorSubject ===
+// Subject: multicast observable (both producer AND consumer)
+const notifications$ = new Subject<string>();
+notifications$.next("New message");  // push values
+notifications$.subscribe(msg => console.log(msg));
+
+// BehaviorSubject: Subject with an INITIAL value + remembers last value
+const currentUser$ = new BehaviorSubject<User | null>(null);
+currentUser$.getValue();  // get current value synchronously
+currentUser$.next(user);  // emit new value
+
+// === Unsubscribing (prevent memory leaks!) ===
+// Method 1: takeUntil with destroy subject
+export class UserComponent implements OnDestroy {
+    private destroy$ = new Subject<void>();
+
+    ngOnInit() {
+        this.userService.getUsers().pipe(
+            takeUntil(this.destroy$),  // auto-unsubscribe on destroy
+        ).subscribe(users => this.users = users);
+    }
+
+    ngOnDestroy() {
+        this.destroy$.next();
+        this.destroy$.complete();
+    }
+}
+
+// Method 2: DestroyRef (Angular 16+ — modern way)
+export class UserComponent {
+    private destroyRef = inject(DestroyRef);
+
+    constructor() {
+        this.userService.getUsers().pipe(
+            takeUntilDestroyed(this.destroyRef),
+        ).subscribe(users => this.users = users);
+    }
+}
+
+// Method 3: async pipe (BEST — auto-subscribes AND unsubscribes)
+// <div *ngFor="let user of users$ | async">{{ user.name }}</div>
+```
+
+#### Lifecycle Hooks
+
+```typescript
+// Angular lifecycle hooks (in execution order)
+export class UserComponent implements OnInit, OnChanges, OnDestroy {
+    @Input() userId!: number;
+
+    constructor() {
+        // DI only — don't fetch data here
+    }
+
+    ngOnChanges(changes: SimpleChanges) {
+        // Called when @Input properties change
+        if (changes['userId']) {
+            console.log(`userId: ${changes['userId'].previousValue} → ${changes['userId'].currentValue}`);
+        }
+    }
+
+    ngOnInit() {
+        // Called ONCE after first ngOnChanges
+        // Best place for: initial data fetching, setup
+        this.loadUser();
+    }
+
+    ngOnDestroy() {
+        // Cleanup: unsubscribe, clear timers, disconnect WebSocket
+    }
+}
+
+// Modern alternative: DestroyRef (Angular 16+)
+export class UserComponent {
+    private destroyRef = inject(DestroyRef);
+
+    constructor() {
+        // Register cleanup functions
+        this.destroyRef.onDestroy(() => {
+            console.log("Component destroyed — cleanup!");
+        });
+    }
+}
+```
+
+#### Routing
+
+```typescript
+// === Route configuration ===
+const routes: Routes = [
+    { path: '', component: HomeComponent },
+    { path: 'users', component: UserListComponent },
+    { path: 'users/:id', component: UserDetailComponent },
+    { path: 'admin', loadComponent: () =>             // lazy loading!
+        import('./admin/admin.component').then(m => m.AdminComponent)
+    },
+    { path: '**', component: NotFoundComponent },     // wildcard (404)
+];
+
+// === Reading route params ===
+export class UserDetailComponent {
+    private route = inject(ActivatedRoute);
+    private router = inject(Router);
+
+    user$ = this.route.paramMap.pipe(
+        switchMap(params => {
+            const id = Number(params.get('id'));
+            return this.userService.getUser(id);
+        }),
+    );
+
+    goBack() {
+        this.router.navigate(['/users']);
+    }
+}
+
+// === Route Guards (protect routes) ===
+// Functional guard (modern Angular)
+export const authGuard: CanActivateFn = (route, state) => {
+    const authService = inject(AuthService);
+    const router = inject(Router);
+
+    if (authService.isAuthenticated()) {
+        return true;
+    }
+    return router.createUrlTree(['/login'], {
+        queryParams: { returnUrl: state.url },
+    });
+};
+
+// Usage in routes:
+{ path: 'admin', component: AdminComponent, canActivate: [authGuard] }
+```
+
+#### Forms — Template-Driven vs Reactive
+
+```typescript
+// === Reactive Forms (preferred — programmatic, testable) ===
+import { FormBuilder, FormGroup, Validators } from '@angular/forms';
+
+export class SignupComponent {
+    private fb = inject(FormBuilder);
+
+    signupForm = this.fb.group({
+        name: ['', [Validators.required, Validators.minLength(3)]],
+        email: ['', [Validators.required, Validators.email]],
+        password: ['', [Validators.required, Validators.minLength(8)]],
+    });
+
+    onSubmit() {
+        if (this.signupForm.valid) {
+            console.log(this.signupForm.value);
+            // { name: "Tushar", email: "t@example.com", password: "..." }
+        }
+    }
+}
+
+// Template:
+// <form [formGroup]="signupForm" (ngSubmit)="onSubmit()">
+//     <input formControlName="name" />
+//     <div *ngIf="signupForm.get('name')?.errors?.['required']">
+//         Name is required
+//     </div>
+//     <button [disabled]="signupForm.invalid">Submit</button>
+// </form>
+
+// === Template-Driven Forms (simpler, less control) ===
+// <form #myForm="ngForm" (ngSubmit)="onSubmit(myForm)">
+//     <input name="email" ngModel required email />
+//     <button [disabled]="myForm.invalid">Submit</button>
+// </form>
+
+// Reactive vs Template-Driven:
+//   Reactive: explicit, testable, complex forms, dynamic fields
+//   Template: simpler, less code, basic forms, rapid prototyping
+```
+
+#### HTTP Client & Interceptors
+
+```typescript
+// === HTTP Client ===
+@Injectable({ providedIn: 'root' })
+export class ApiService {
+    private http = inject(HttpClient);
+
+    getUsers(): Observable<User[]> {
+        return this.http.get<User[]>('/api/users');
+    }
+
+    createUser(user: Partial<User>): Observable<User> {
+        return this.http.post<User>('/api/users', user);
+    }
+
+    updateUser(id: number, user: Partial<User>): Observable<User> {
+        return this.http.put<User>(`/api/users/${id}`, user);
+    }
+}
+
+// === HTTP Interceptors (middleware for all HTTP requests) ===
+// Functional interceptor (Angular 15+)
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+    const token = inject(AuthService).getToken();
+
+    if (token) {
+        const cloned = req.clone({
+            setHeaders: { Authorization: `Bearer ${token}` },
+        });
+        return next(cloned);
+    }
+    return next(req);
+};
+
+// Error interceptor
+export const errorInterceptor: HttpInterceptorFn = (req, next) => {
+    return next(req).pipe(
+        catchError((error: HttpErrorResponse) => {
+            if (error.status === 401) {
+                inject(Router).navigate(['/login']);
+            }
+            return throwError(() => error);
+        }),
+    );
+};
+
+// Register interceptors:
+// bootstrapApplication(AppComponent, {
+//     providers: [
+//         provideHttpClient(withInterceptors([authInterceptor, errorInterceptor])),
+//     ],
+// });
+```
+
+📌 **TLDR:** "Angular = full opinionated framework (routing, forms, DI, HTTP built-in). Standalone components replace NgModules. DI uses `inject()` function with hierarchical injectors. Signals for simple reactive state, RxJS for async streams. OnPush change detection + immutable data for performance. `switchMap` for search (cancels previous), `async` pipe auto-manages subscriptions. Reactive forms for complex forms, template-driven for simple ones. HTTP interceptors for auth/error handling. Zoneless Angular is the future."
+
+---
+
+### 27.9 Framework Comparison & Full-Stack Architecture
+
+#### React vs Vue vs Angular — Complete Comparison
+
+| Feature | React | Vue | Angular |
+|---------|-------|-----|---------|
+| **Type** | Library | Progressive Framework | Full Framework |
+| **Language** | JSX + JavaScript/TS | SFC + JavaScript/TS | TypeScript (required) |
+| **Reactivity** | Manual (useState/setState) | Proxy-based (automatic) | Zone.js + Signals |
+| **Data binding** | One-way | One-way + v-model | Two-way (ngModel) |
+| **DOM** | Virtual DOM | Virtual DOM (Vue 3 optimized) | Incremental DOM |
+| **State management** | Zustand, Redux, Context | Pinia (official) | Signals, RxJS, NgRx |
+| **Rendering** | JSX (JS-first) | Templates (HTML-first) | Templates (HTML-first) |
+| **Change detection** | Reconciliation (diffing) | Proxy tracking (precise) | Zone.js / OnPush |
+| **DI** | None (props/context) | provide/inject | Full DI container |
+| **Routing** | React Router (3rd party) | Vue Router (official) | Built-in Router |
+| **Forms** | Controlled/Uncontrolled | v-model, VeeValidate | Reactive + Template-driven |
+| **HTTP client** | fetch/axios (3rd party) | fetch/axios (3rd party) | HttpClient (built-in) |
+| **CLI** | create-react-app / Vite | create-vue / Vite | Angular CLI |
+| **SSR** | Next.js | Nuxt.js | Angular Universal / Analog |
+| **Learning curve** | Moderate (JS knowledge) | Low (gradual adoption) | Steep (many concepts) |
+| **Bundle size** | ~40 KB (core) | ~33 KB (core) | ~130 KB (core) |
+| **Ecosystem** | Largest | Growing | Enterprise-focused |
+| **Best for** | SPAs, mobile (React Native) | Rapid development, SPAs | Large enterprise apps |
+| **Used by** | Meta, Netflix, Airbnb | Alibaba, GitLab, Nintendo | Google, Microsoft, IBM |
+
+#### When to Choose Which?
+
+```
+Choose React when:
+  ✅ Large talent pool needed (most popular)
+  ✅ Mobile app also needed (React Native)
+  ✅ Flexibility in architecture choices
+  ✅ Rich ecosystem of third-party libraries
+  ✅ Incremental adoption in existing app
+
+Choose Vue when:
+  ✅ Rapid prototyping / MVPs
+  ✅ Team is learning frontend (gentlest learning curve)
+  ✅ Progressive enhancement of existing pages
+  ✅ Clean separation of HTML/JS/CSS
+  ✅ Small to medium team, fast iteration
+
+Choose Angular when:
+  ✅ Large enterprise team (strong conventions = consistency)
+  ✅ Complex business logic (DI + RxJS + TypeScript)
+  ✅ Everything built-in (no decision fatigue)
+  ✅ Long-term maintainability over flexibility
+  ✅ Government/financial/healthcare (compliance-heavy)
+
+Interview answer: "I'd choose based on team and project needs:
+  React for flexibility and ecosystem.
+  Vue for rapid development and learning.
+  Angular for enterprise consistency and built-in tooling.
+  All three can build the same app — the difference is team
+  productivity and long-term maintenance."
+```
+
+#### Meta-Frameworks — Full-Stack Frontend
+
+```
+Meta-frameworks build on top of UI frameworks to add:
+  - Server-side rendering (SSR)
+  - Static site generation (SSG)
+  - API routes (full-stack)
+  - File-based routing
+  - Code splitting
+  - Image optimization
+
+  Next.js (React)                    │  Nuxt.js (Vue)
+  ───────────────────────────────────│──────────────────────────
+  App Router (React Server Components)│  Nuxt 3 (Composition API)
+  API routes in /app/api/*           │  Server routes in /server/api/*
+  Server Actions                     │  Server utils (useFetch, $fetch)
+  Middleware                         │  Middleware
+  Vercel (primary deployment)        │  Nitro (universal deployment)
+  Image optimization (next/image)    │  nuxt/image
+  Turbopack (bundler)                │  Vite (bundler)
+
+  Analog (Angular)
+  ─────────────────
+  Vite-based Angular (NOT Angular CLI)
+  File-based routing
+  API routes
+  SSR / SSG support
+  Still emerging (2024+)
+```
+
+#### Build Tools — Vite, Webpack, Turbopack
+
+```
+Vite (2020+ — the modern standard):
+  Dev: uses native ES modules → instant server start, HMR in <50ms
+  Build: uses Rollup for optimized production bundles
+  Why it's fast: no bundling in dev! Browser handles ES imports directly
+  Used by: Vue (default), React (via create-vite), Angular (Analog)
+
+Webpack (2012 — the legacy standard):
+  Bundles EVERYTHING into a single (or few) JS files
+  Slow: rebuilds entire dependency graph on changes
+  Still used: Angular CLI, older React/Vue projects
+  Complex config, but highly customizable (loaders, plugins)
+
+Turbopack (2023 — Webpack successor by Vercel):
+  Written in Rust → 10x faster than Vite, 700x faster than Webpack
+  Incremental: only rebuilds what changed
+  Used by: Next.js (experimental)
+
+esbuild (2020 — the fast compiler):
+  Written in Go → 10-100x faster than Webpack
+  Used by Vite (for dependency pre-bundling and TS transpilation)
+  Limited plugin ecosystem
+
+Build optimization techniques:
+  ✅ Code splitting:     dynamic import() → separate chunks per route
+  ✅ Tree shaking:       remove unused exports (ESM only)
+  ✅ Minification:       remove whitespace, shorten names (terser/esbuild)
+  ✅ Compression:        gzip/brotli (server-level)
+  ✅ Lazy loading:       load components on demand
+  ✅ Content hashing:    app.a1b2c3.js → cache forever, bust on change
+```
+
+#### Testing Strategies
+
+```
+Frontend Testing Pyramid:
+
+  ┌──────────────────────────────────────┐
+  │           E2E Tests                  │ ← few, slow, expensive
+  │         (Playwright, Cypress)        │    test full user flows
+  ├──────────────────────────────────────┤
+  │       Integration Tests              │ ← moderate amount
+  │   (Testing Library + MSW)            │    test component interactions
+  ├──────────────────────────────────────┤
+  │         Unit Tests                   │ ← many, fast, cheap
+  │     (Vitest, Jest)                   │    test isolated logic
+  └──────────────────────────────────────┘
+
+Testing Library philosophy:
+  "Test the way users interact with your app"
+  ❌ Don't test implementation details (state, internal methods)
+  ✅ Test behavior: "when user clicks X, Y appears"
+
+  // React example with Testing Library
+  render(<Counter />);
+  const button = screen.getByRole('button', { name: '+' });
+  fireEvent.click(button);
+  expect(screen.getByText('Count: 1')).toBeInTheDocument();
+
+MSW (Mock Service Worker):
+  Intercepts HTTP requests at the network level
+  Works in tests AND in development
+  Much better than mocking fetch/axios directly
+```
+
+#### Micro-Frontends — Scaling Frontend Teams
+
+```
+Micro-Frontends = breaking a frontend monolith into independently
+deployable pieces (like microservices for the frontend)
+
+Approaches:
+  1. Module Federation (Webpack 5 / Vite):
+     Each team builds a separate app → loaded at runtime
+     Shared dependencies (React, Vue) loaded once
+     Most popular approach in 2026
+
+  2. iframes (simple but limited):
+     Each micro-frontend in an iframe
+     Strong isolation but poor UX (no shared state, styling issues)
+
+  3. Web Components (framework-agnostic):
+     Custom elements (<team-a-widget>) work across React/Vue/Angular
+     Good isolation but limited tooling
+
+  4. Server-side composition:
+     Server assembles page from fragments (like ESI / Tailor.js)
+     Good for performance, complex to set up
+
+When to use micro-frontends:
+  ✅ Multiple teams owning different parts of a large app
+  ✅ Teams want to use different frameworks
+  ✅ Independent deployment cycles needed
+  ❌ Small team, single app → monolith is fine!
+  ❌ Don't use for "just in case" — adds real complexity
+```
+
+#### Full-Stack Architecture — Putting It All Together
+
+```
+Modern Full-Stack Architecture (2025+):
+
+  ┌──────────────────────────────────────────────────────────┐
+  │                       CDN (CloudFront)                    │
+  │  Static assets (JS/CSS/images) cached globally            │
+  └──────────────┬───────────────────────────────────────────┘
+                 │
+  ┌──────────────▼───────────────────────────────────────────┐
+  │                  Frontend (Next.js / Nuxt / Angular)      │
+  │  Server Components → SSR HTML                             │
+  │  Client Components → interactive UI                       │
+  │  API Routes → BFF (Backend for Frontend)                  │
+  └──────────────┬───────────────────────────────────────────┘
+                 │
+  ┌──────────────▼───────────────────────────────────────────┐
+  │              API Gateway (Kong / AWS API GW)              │
+  │  Rate limiting, auth, routing                             │
+  └──────────────┬───────────────────────────────────────────┘
+                 │
+  ┌──────────────▼───────────────────────────────────────────┐
+  │           Backend Services (Python/FastAPI/Node)          │
+  │  REST / GraphQL / gRPC                                    │
+  └──────────────┬───────────────────────────────────────────┘
+                 │
+  ┌──────────────▼───────────────────────────────────────────┐
+  │           Data Layer                                      │
+  │  PostgreSQL │ Redis │ S3 │ ElasticSearch                  │
+  └─────────────────────────────────────────────────────────┘
+
+BFF Pattern (Backend for Frontend):
+  Problem: mobile app and web app need DIFFERENT data shapes
+  Solution: each client gets its own lightweight API layer
+    Web BFF:    /api/web/dashboard → aggregates + formats for web UI
+    Mobile BFF: /api/mobile/dashboard → lighter payload for mobile
+
+GraphQL vs REST (for frontend consumption):
+  REST:     multiple endpoints, over-fetching, simple caching
+  GraphQL:  single endpoint, client specifies data shape, no over-fetching
+  Use REST for: simple CRUD, well-defined resources
+  Use GraphQL for: complex queries, multiple data sources, mobile apps
+```
+
+📌 **TLDR:** "React = flexible library (largest ecosystem), Vue = progressive framework (easiest learning curve), Angular = full framework (enterprise conventions). Meta-frameworks add SSR/SSG: Next.js (React), Nuxt (Vue), Analog (Angular). Vite is the modern build tool (instant HMR). Test with Testing Library (behavior, not implementation). Micro-frontends for large multi-team apps (Module Federation). Full-stack: CDN + SSR frontend + BFF + API services + data layer."
