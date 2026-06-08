@@ -227,6 +227,16 @@
   - [22.10 ElastiCache — Managed Redis & Memcached](#2210-elasticache--managed-redis--memcached)
   - [22.11 CloudWatch, X-Ray & CloudTrail](#2211-cloudwatch-x-ray--cloudtrail--monitoring--observability)
   - [22.12 AWS Interview Q&A Bank](#2212-aws-interview-qa-bank)
+  - [22.13 AWS Bedrock — Managed Generative AI Platform](#2213-aws-bedrock--managed-generative-ai-platform)
+    - [Bedrock Architecture](#bedrock-architecture)
+    - [The Converse API — Unified Chat Interface](#the-converse-api--unified-chat-interface-python)
+    - [Knowledge Bases — Managed RAG](#knowledge-bases--managed-rag)
+    - [Agents — Multi-Step Task Execution](#agents--multi-step-task-execution)
+    - [Guardrails — Safety & Compliance Layer](#guardrails--safety--compliance-layer)
+    - [Fine-Tuning & Customization](#fine-tuning--customization)
+    - [Pricing Model](#pricing-model)
+    - [Bedrock vs SageMaker](#bedrock-vs-sagemaker--when-to-use-which)
+    - [Bedrock Interview Q&A](#bedrock-interview-qa)
 
 **Google Cloud Platform (GCP)**
 
@@ -244,6 +254,19 @@
   - [23.11 Cloud Monitoring & Logging](#2311-cloud-monitoring--logging--observability)
   - [23.12 GCP vs AWS — Complete Service Comparison](#2312-gcp-vs-aws--complete-service-comparison)
   - [23.13 GCP Interview Q&A Bank](#2313-gcp-interview-qa-bank)
+  - [23.14 GCP Vertex AI — Unified AI/ML & Generative AI Platform](#2314-gcp-vertex-ai--unified-aiml--generative-ai-platform)
+    - [Vertex AI Architecture](#vertex-ai-architecture)
+    - [Gemini API — Generating Content](#gemini-api--generating-content-python)
+    - [Model Garden — 200+ Models](#model-garden--200-models-at-your-fingertips)
+    - [Grounding — Reducing Hallucinations](#grounding--reducing-hallucinations)
+    - [RAG Engine — Managed RAG](#rag-engine--managed-retrieval-augmented-generation)
+    - [Agent Development Kit (ADK) & Agent Engine](#agent-development-kit-adk--agent-engine)
+    - [Fine-Tuning & Customization](#fine-tuning--customization-1)
+    - [Gen AI Evaluation Service](#gen-ai-evaluation-service)
+    - [Vertex AI Pipelines — MLOps](#vertex-ai-pipelines--mlops)
+    - [Pricing Model](#pricing-model-1)
+    - [Vertex AI vs AWS Bedrock — Complete Comparison](#vertex-ai-vs-aws-bedrock--complete-comparison)
+    - [Vertex AI Interview Q&A](#vertex-ai-interview-qa)
 
 **DevOps — Docker, Kubernetes, IaC & CI/CD**
 
@@ -23773,9 +23796,580 @@ A: Systematic checklist (in order):
 
 📌 **TLDR:** "For AWS interviews: know VPC + IAM (security), EC2 + ASG + ALB (compute + scaling), S3 (storage), Lambda (serverless), DynamoDB (NoSQL), RDS/Aurora (SQL), SQS/SNS (messaging), CloudFront (CDN), and CloudWatch/X-Ray (monitoring). Design for Multi-AZ HA, use IAM Roles not keys, and always mention cost optimization (Reserved/Spot/Savings Plans). For ops questions: know VPC peering vs Transit Gateway vs PrivateLink, Security Groups (stateful) vs NACLs (stateless), Direct Connect vs VPN for hybrid, NAT Gateway for private subnet internet access, and IAM Roles + Instance Profiles for credential-free access."
 
-
 ---
 
+### 22.13 AWS Bedrock — Managed Generative AI Platform
+
+> **📣 Definition:** _"Amazon Bedrock is NOT a model — it's a fully managed, serverless API that gives you access to foundation models from multiple providers (Anthropic Claude, Meta Llama, Mistral, Cohere, Amazon Titan/Nova) through a single unified API. Think of it as 'the AWS gateway to GenAI' — you don't manage GPUs, don't host models, and your data stays within the AWS boundary for compliance. The key differentiator: model-agnostic design, enterprise-grade guardrails, managed RAG (Knowledge Bases), and agentic orchestration — all serverless, pay-per-token."_
+
+```
+What IS Bedrock? (for someone who knows nothing):
+
+  WITHOUT Bedrock:
+    - Sign up for OpenAI API, Anthropic API, Cohere API separately
+    - Manage API keys for each provider
+    - Data leaves your cloud → compliance risk
+    - Build your own RAG pipeline, guardrails, agent orchestration
+    - Different request formats for each provider
+
+  WITH Bedrock:
+    - ONE API (AWS SDK / boto3) to access ALL providers
+    - Data stays inside YOUR AWS account (VPC, IAM, CloudTrail)
+    - Managed RAG, managed agents, managed guardrails — all serverless
+    - Switch models by changing ONE parameter (model ID)
+    - Pay-per-token, no GPU management
+
+  Python analogy:
+    Bedrock ≈ Django REST Framework for AI models
+    Models  ≈ pluggable database backends (Postgres, MySQL, SQLite)
+    You write ONE interface, swap the backend without changing code
+```
+
+#### Bedrock Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        AMAZON BEDROCK                              │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                    MODEL CATALOG                             │   │
+│  │  Anthropic (Claude 4, 3.7)  │  Meta (Llama 3.x, 4)         │   │
+│  │  Mistral (Large, Nemo)      │  Amazon (Titan, Nova)         │   │
+│  │  Cohere (Command R+)        │  OpenAI (GPT-5.x)            │   │
+│  │  AI21 Labs (Jamba)          │  Stability AI (images)        │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                           │                                         │
+│  ┌────────────┐  ┌────────┴────────┐  ┌──────────────────────┐     │
+│  │ GUARDRAILS │  │  CONVERSE API   │  │  KNOWLEDGE BASES     │     │
+│  │            │  │ (unified chat)  │  │  (managed RAG)       │     │
+│  │ - Content  │  │                 │  │                      │     │
+│  │   filter   │  │ - Text          │  │  S3 docs → Chunk     │     │
+│  │ - PII      │  │ - Multi-turn    │  │  → Embed → Vector DB │     │
+│  │   redact   │  │ - Streaming     │  │  → Retrieve → Answer │     │
+│  │ - Topic    │  │ - Tool calling  │  │                      │     │
+│  │   deny     │  │                 │  │  (OpenSearch, Aurora, │     │
+│  │ - Prompt   │  │                 │  │   Pinecone, Redis)   │     │
+│  │   injection│  │                 │  │                      │     │
+│  └────────────┘  └─────────────────┘  └──────────────────────┘     │
+│                           │                                         │
+│  ┌────────────────────────┴──────────────────────────────────────┐  │
+│  │                       AGENTS                                  │  │
+│  │  Multi-step reasoning → Tool calling (Lambda) → Memory       │  │
+│  │  Action Groups (OpenAPI specs) → Code Interpreter             │  │
+│  │  AgentCore: managed runtime, identity, observability          │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                    CUSTOMIZATION                               │ │
+│  │  Fine-tuning (SFT via S3)  │  Reinforcement Fine-Tuning (RFT) │ │
+│  │  Continued Pre-training    │  Prompt caching (up to 90% off)  │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  Security: VPC endpoints, IAM, CloudTrail audit, encryption at rest│
+│  Compliance: SOC 2, HIPAA, PCI DSS, FedRAMP High                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### The Converse API — Unified Chat Interface (Python)
+
+```python
+import boto3
+import json
+
+# === Basic: Call any model with the SAME code ===
+client = boto3.client("bedrock-runtime", region_name="us-east-1")
+
+# Change ONLY this line to switch providers!
+model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+# model_id = "meta.llama3-1-70b-instruct-v1:0"
+# model_id = "mistral.mistral-large-2407-v1:0"
+# model_id = "amazon.nova-pro-v1:0"
+
+response = client.converse(
+    modelId=model_id,
+    messages=[
+        {
+            "role": "user",
+            "content": [{"text": "Explain ACID properties in 3 sentences."}]
+        }
+    ],
+    inferenceConfig={
+        "maxTokens": 512,
+        "temperature": 0.3,
+        "topP": 0.9
+    },
+    # Optional: attach a system prompt
+    system=[{"text": "You are a senior database architect. Be concise."}]
+)
+
+# Unified response format — same structure for ALL models
+answer = response["output"]["message"]["content"][0]["text"]
+usage = response["usage"]  # {"inputTokens": 42, "outputTokens": 87}
+print(f"Answer: {answer}")
+print(f"Tokens: {usage['inputTokens']} in, {usage['outputTokens']} out")
+```
+
+```python
+# === Streaming — real-time token-by-token output ===
+stream = client.converse_stream(
+    modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+    messages=[{"role": "user", "content": [{"text": "Write a Python decorator tutorial."}]}],
+    inferenceConfig={"maxTokens": 1024}
+)
+
+for event in stream["stream"]:
+    if "contentBlockDelta" in event:
+        print(event["contentBlockDelta"]["delta"]["text"], end="", flush=True)
+```
+
+```python
+# === Multi-turn conversation ===
+conversation = []
+
+def chat(user_message: str) -> str:
+    conversation.append({
+        "role": "user",
+        "content": [{"text": user_message}]
+    })
+
+    response = client.converse(
+        modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        messages=conversation,
+        inferenceConfig={"maxTokens": 1024}
+    )
+
+    assistant_message = response["output"]["message"]
+    conversation.append(assistant_message)  # append for context
+    return assistant_message["content"][0]["text"]
+
+print(chat("What is a closure in Python?"))
+print(chat("Now show me a real-world example."))  # remembers context!
+```
+
+```python
+# === Tool Use / Function Calling ===
+tools = [{
+    "toolSpec": {
+        "name": "get_weather",
+        "description": "Get current weather for a location",
+        "inputSchema": {
+            "json": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"},
+                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+                },
+                "required": ["location"]
+            }
+        }
+    }
+}]
+
+response = client.converse(
+    modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+    messages=[{"role": "user", "content": [{"text": "What's the weather in London?"}]}],
+    toolConfig={"tools": tools}
+)
+
+# Model returns a tool_use block instead of text:
+# {"toolUse": {"toolUseId": "...", "name": "get_weather", "input": {"location": "London"}}}
+# You call the actual API, then send the result back as a tool_result message
+```
+
+```
+When to use InvokeModel vs Converse:
+
+  ┌──────────────────────────────┬──────────────────────────────┐
+  │ Converse API (preferred)     │ InvokeModel (legacy/special) │
+  ├──────────────────────────────┼──────────────────────────────┤
+  │ Chat / text generation       │ Image generation (SDXL)      │
+  │ Multi-turn conversations     │ Embeddings (Titan Embed)     │
+  │ Tool use / function calling  │ Model-specific features      │
+  │ Streaming responses          │ Custom request formats       │
+  │ Unified format across models │ Provider-specific JSON       │
+  └──────────────────────────────┴──────────────────────────────┘
+
+  Rule: always use Converse unless you need image/embedding endpoints
+```
+
+#### Knowledge Bases — Managed RAG
+
+```
+What it does (for a backend developer):
+
+  You: "Here are my 10,000 PDF docs about our product."
+  Bedrock: "I'll chunk them, embed them, store vectors, and retrieve
+            relevant context when users ask questions — you write zero
+            RAG pipeline code."
+
+  The complete flow:
+    1. Upload docs to S3 bucket
+    2. Create Knowledge Base (pick embedding model + vector store)
+    3. Bedrock AUTOMATICALLY:
+       - Parses documents (PDF, HTML, CSV, Word, Markdown)
+       - Chunks text (configurable size/overlap)
+       - Generates embeddings (Titan Embeddings v2 or Cohere)
+       - Stores in vector DB (OpenSearch Serverless / Aurora / Pinecone)
+    4. At query time:
+       - Embeds user question
+       - Semantic search over vector store
+       - Retrieves top-K relevant chunks
+       - Passes chunks + question to foundation model
+       - Returns answer WITH source attribution
+
+  Python analogy:
+    Knowledge Base ≈ Django Haystack + Elasticsearch, but managed
+    You just point it at your data and query it
+```
+
+```python
+# === Create and query a Knowledge Base ===
+import boto3
+
+# Step 1: Query an existing Knowledge Base
+bedrock_agent = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
+
+response = bedrock_agent.retrieve_and_generate(
+    input={"text": "What is our refund policy for enterprise customers?"},
+    retrieveAndGenerateConfiguration={
+        "type": "KNOWLEDGE_BASE",
+        "knowledgeBaseConfiguration": {
+            "knowledgeBaseId": "KB-ABC123",  # from Bedrock console
+            "modelArn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+        }
+    }
+)
+
+print(response["output"]["text"])
+
+# Source attribution — trace answers back to documents
+for citation in response.get("citations", []):
+    for ref in citation.get("retrievedReferences", []):
+        print(f"  Source: {ref['location']['s3Location']['uri']}")
+        print(f"  Chunk:  {ref['content']['text'][:200]}...")
+```
+
+```
+Supported vector stores for Knowledge Bases:
+
+  ┌──────────────────────────────┬─────────────────────────────────┐
+  │ Vector Store                 │ When to use                     │
+  ├──────────────────────────────┼─────────────────────────────────┤
+  │ OpenSearch Serverless        │ Default, fully managed, no ops  │
+  │ Aurora PostgreSQL (pgvector) │ Already using RDS/Aurora         │
+  │ Pinecone                     │ Need Pinecone-specific features │
+  │ Redis Enterprise             │ Ultra-low latency retrieval     │
+  │ MongoDB Atlas                │ Already in MongoDB ecosystem    │
+  │ Neptune Analytics            │ GraphRAG / multi-hop queries    │
+  └──────────────────────────────┴─────────────────────────────────┘
+
+  Data sources: S3, Confluence, Salesforce, SharePoint, web crawlers
+```
+
+#### Agents — Multi-Step Task Execution
+
+```
+What is a Bedrock Agent?
+
+  A Bedrock Agent = an LLM that can PLAN, REASON, and ACT:
+    1. User: "Book me a flight from NYC to London next Friday under $800"
+    2. Agent THINKS: "I need to search flights, filter by price, then book"
+    3. Agent CALLS: search_flights(from="NYC", to="LDN", date="2026-06-13")
+    4. Agent EVALUATES: "Found 3 options, cheapest is $650"
+    5. Agent CALLS: book_flight(flight_id="BA178", passenger="Tushar")
+    6. Agent RESPONDS: "Booked BA178 for $650. Confirmation: XYZ123"
+
+  How it works:
+    - Agent has a set of "Action Groups" (tools it can use)
+    - Each Action Group = Lambda function + OpenAPI schema
+    - Agent uses ReAct-style reasoning (Thought → Action → Observation)
+    - Agent has session memory (remembers previous turns)
+
+  Python analogy:
+    Agent        ≈ a LangGraph agent with tools
+    Action Group ≈ a Python function decorated with @tool
+    BUT: Bedrock manages the orchestration, memory, and runtime for you
+```
+
+```python
+# === Invoke a Bedrock Agent ===
+bedrock_agent = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
+
+response = bedrock_agent.invoke_agent(
+    agentId="AGENT-XYZ",
+    agentAliasId="ALIAS-PROD",
+    sessionId="user-session-123",  # enables multi-turn memory
+    inputText="What were our top 5 selling products last quarter?"
+)
+
+# Agent may call multiple tools internally before responding
+for event in response["completion"]:
+    if "chunk" in event:
+        print(event["chunk"]["bytes"].decode(), end="")
+```
+
+```
+AgentCore (GA late 2025) — The Enterprise Agent Runtime:
+
+  Problem: Bedrock Agents are tied to Bedrock models and AWS Lambda
+  AgentCore: framework-agnostic runtime for ANY agent
+
+  ┌──────────────────────────────────────────────────────────┐
+  │                     AGENTCORE                            │
+  │                                                          │
+  │  Works with: LangChain, CrewAI, LlamaIndex, custom      │
+  │  Works with: ANY model (Bedrock, SageMaker, external)    │
+  │                                                          │
+  │  Provides:                                               │
+  │    ✓ Managed runtime (no servers)                        │
+  │    ✓ Session memory (conversation persistence)           │
+  │    ✓ Identity management (per-agent IAM)                 │
+  │    ✓ Observability (traces, logs, metrics)               │
+  │    ✓ Tool registry (governed tool access)                │
+  └──────────────────────────────────────────────────────────┘
+```
+
+#### Guardrails — Safety & Compliance Layer
+
+```
+Guardrails = a safety layer that sits BETWEEN the user and the model
+             Works with ANY model on Bedrock (model-independent)
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  User Input → [GUARDRAILS] → Model → [GUARDRAILS] → Output │
+  │                    ↑                       ↑                │
+  │              Blocks bad input        Filters bad output     │
+  └─────────────────────────────────────────────────────────────┘
+
+  What Guardrails can do:
+
+  1. Content Filtering:
+     Block hate speech, violence, sexual content, misconduct
+     Configurable sensitivity: NONE | LOW | MEDIUM | HIGH
+
+  2. Topic Denial:
+     "Never discuss competitor products"
+     "Don't provide legal or medical advice"
+     → returns a safe default message instead
+
+  3. PII Redaction:
+     Input:  "My email is tushar@example.com and SSN is 123-45-6789"
+     Output: "My email is [EMAIL] and SSN is [SSN]"
+     Supports: email, phone, SSN, credit card, IP address, name, address
+
+  4. Word/Phrase Blocklist:
+     Block specific words, profanity, or internal terminology
+
+  5. Contextual Grounding:
+     Detect hallucinations by checking if response is grounded
+     in the provided context (from Knowledge Base)
+
+  6. Prompt Injection Defense:
+     Detects and blocks attempts to override system instructions
+     "Ignore all previous instructions and..." → BLOCKED
+```
+
+```python
+# === Create and use Guardrails ===
+bedrock = boto3.client("bedrock", region_name="us-east-1")
+
+# Create a guardrail
+guardrail = bedrock.create_guardrail(
+    name="production-safety",
+    description="Safety guardrail for customer-facing chatbot",
+    contentPolicyConfig={
+        "filtersConfig": [
+            {"type": "HATE", "inputStrength": "HIGH", "outputStrength": "HIGH"},
+            {"type": "VIOLENCE", "inputStrength": "HIGH", "outputStrength": "HIGH"},
+            {"type": "SEXUAL", "inputStrength": "HIGH", "outputStrength": "HIGH"},
+            {"type": "MISCONDUCT", "inputStrength": "MEDIUM", "outputStrength": "MEDIUM"},
+        ]
+    },
+    sensitiveInformationPolicyConfig={
+        "piiEntitiesConfig": [
+            {"type": "EMAIL", "action": "ANONYMIZE"},
+            {"type": "PHONE", "action": "ANONYMIZE"},
+            {"type": "US_SOCIAL_SECURITY_NUMBER", "action": "BLOCK"},
+            {"type": "CREDIT_DEBIT_CARD_NUMBER", "action": "BLOCK"},
+        ]
+    },
+    topicPolicyConfig={
+        "topicsConfig": [
+            {
+                "name": "legal-advice",
+                "definition": "Questions asking for specific legal advice or opinions",
+                "type": "DENY"
+            }
+        ]
+    },
+    blockedInputMessaging="I can't help with that request.",
+    blockedOutputMessaging="I can't provide that information.",
+)
+
+# Use guardrail with Converse API
+response = client.converse(
+    modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+    messages=[{"role": "user", "content": [{"text": "What is your SSN?"}]}],
+    guardrailConfig={
+        "guardrailIdentifier": guardrail["guardrailId"],
+        "guardrailVersion": "DRAFT"
+    }
+)
+# If guardrail triggers, response includes guardrail action details
+```
+
+#### Fine-Tuning & Customization
+
+```
+Customization options (from least to most effort):
+
+  1. System Prompts (zero effort)
+     → just add instructions in the system message
+     → works for 90% of use cases
+
+  2. Prompt Caching (cost optimization)
+     → cache repeated system prompts / context
+     → up to 90% cost reduction for repetitive workloads
+
+  3. Fine-Tuning (SFT — Supervised Fine-Tuning)
+     → upload labeled examples (JSONL) to S3
+     → Bedrock trains a custom model variant
+     → better for: domain-specific tone, format, terminology
+     → supported models: Titan, Llama, Cohere
+
+  4. Reinforcement Fine-Tuning (RFT — new!)
+     → model learns from AI-based judges or rule-based graders
+     → don't need massive labeled datasets
+     → avg 66% accuracy improvement reported
+     → great for: coding accuracy, factual precision
+
+  5. Continued Pre-training
+     → feed unlabeled domain data (medical papers, legal docs)
+     → model absorbs domain knowledge
+     → most expensive, most powerful
+```
+
+#### Pricing Model
+
+```
+Bedrock pricing — critical for architecture interviews:
+
+  ┌──────────────────┬────────────────────────────────────────────┐
+  │ Pricing Model    │ Details                                    │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ On-Demand        │ Pay per 1M tokens (input + output)         │
+  │                  │ Output ≈ 3-5x more expensive than input    │
+  │                  │ No commitment, instant access               │
+  │                  │ Best for: dev/test, variable workloads      │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Provisioned (PTU)│ Reserved throughput capacity                │
+  │                  │ 1 or 6 month commitment                    │
+  │                  │ Predictable cost at high volume             │
+  │                  │ Best for: production, steady-state traffic  │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Batch Inference  │ Up to 50% cheaper than on-demand           │
+  │                  │ Async processing, results in hours          │
+  │                  │ Best for: bulk summarization, data labeling │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Prompt Caching   │ Up to 90% off for cached system prompts    │
+  │                  │ Reuse repeated context without reprocessing │
+  │                  │ Best for: RAG with long system instructions │
+  └──────────────────┴────────────────────────────────────────────┘
+
+  Cost optimization checklist:
+    ✓ Use the smallest model that meets your quality bar
+    ✓ Enable prompt caching for repeated contexts
+    ✓ Use batch inference for non-real-time workloads
+    ✓ Switch to Provisioned Throughput at steady-state
+    ✓ Set maxTokens to limit output (don't let model ramble)
+    ✓ Monitor with CloudWatch — track cost-per-conversation
+```
+
+#### Bedrock vs SageMaker — When to Use Which?
+
+```
+  ┌─────────────────────┬──────────────────────┬────────────────────────┐
+  │                     │ Bedrock              │ SageMaker              │
+  ├─────────────────────┼──────────────────────┼────────────────────────┤
+  │ What it is          │ Managed GenAI API    │ Full ML platform       │
+  │ GPU management      │ None (serverless)    │ You choose instances   │
+  │ Model hosting       │ AWS hosts everything │ You host on endpoints  │
+  │ Supported models    │ Curated catalog      │ ANY model (custom too) │
+  │ Customization       │ Fine-tune, RFT       │ Full training from     │
+  │                     │                      │ scratch, RLHF, LoRA    │
+  │ RAG                 │ Managed (Knowledge   │ Build your own         │
+  │                     │ Bases)               │                        │
+  │ Pricing             │ Pay-per-token        │ Pay for compute time   │
+  │ Latency control     │ Limited              │ Full (instance type,   │
+  │                     │                      │ autoscaling)           │
+  │ Best for            │ GenAI apps, chatbots,│ Custom ML models,      │
+  │                     │ RAG, agents          │ full training pipeline │
+  └─────────────────────┴──────────────────────┴────────────────────────┘
+
+  Interview answer:
+    "Use Bedrock when you want to BUILD WITH foundation models (GenAI apps).
+     Use SageMaker when you want to BUILD YOUR OWN models (custom ML).
+     Many teams use both: SageMaker for training, Bedrock for serving."
+```
+
+#### Bedrock Interview Q&A
+
+```
+Q: What is Amazon Bedrock?
+A: A fully managed, serverless service that provides API access to
+   foundation models from multiple providers (Anthropic, Meta, Mistral,
+   Amazon). It's NOT a model — it's an orchestration layer. Data stays
+   within AWS for compliance. Pay-per-token, no GPU management.
+
+Q: How do you implement RAG with Bedrock?
+A: Use Knowledge Bases: (1) store docs in S3, (2) create KB with embedding
+   model + vector store (OpenSearch Serverless is default), (3) Bedrock
+   auto-chunks, embeds, and indexes, (4) at query time, retrieve_and_generate
+   API handles retrieval + generation + source attribution. Zero pipeline
+   code needed.
+
+Q: What is the Converse API?
+A: The unified chat API that works with ALL text models on Bedrock. Same
+   request/response format regardless of provider. Supports multi-turn,
+   streaming, system prompts, tool use. Use Converse for text; InvokeModel
+   for images/embeddings.
+
+Q: How do Guardrails work?
+A: Model-independent safety layer. Applied to BOTH input and output.
+   Capabilities: content filtering (hate/violence/sexual), PII redaction
+   (email/phone/SSN), topic denial (block off-limits subjects), prompt
+   injection detection. Configurable per guardrail, attached to any model.
+
+Q: Bedrock Agents vs LangChain agents — what's the difference?
+A: Bedrock Agents are MANAGED: AWS handles orchestration, memory, identity.
+   You define Action Groups (Lambda + OpenAPI). LangChain agents are CODE:
+   you manage everything. AgentCore bridges them — lets you run LangChain/
+   CrewAI agents on Bedrock's managed runtime.
+
+Q: How do you optimize Bedrock costs?
+A: (1) Use smallest effective model (Haiku < Sonnet < Opus). (2) Enable
+   prompt caching for repeated system prompts (up to 90% off).
+   (3) Batch inference for non-real-time (50% off). (4) Provisioned
+   Throughput at steady-state. (5) Set maxTokens to limit output.
+   (6) Monitor cost-per-conversation via CloudWatch.
+
+Q: Bedrock vs SageMaker?
+A: Bedrock = use existing models (GenAI apps, RAG, agents). Serverless,
+   pay-per-token. SageMaker = train your own models. Full ML platform with
+   GPU control. Use Bedrock for inference, SageMaker for training.
+   Many teams use both.
+
+Q: How does Bedrock handle security/compliance?
+A: Data stays in YOUR AWS account. No model provider sees your data.
+   VPC endpoints for private access. IAM for authorization. CloudTrail
+   for audit logging. Encryption at rest (KMS). Compliant: SOC 2,
+   HIPAA eligible, PCI DSS, FedRAMP High. Customer data is NEVER used
+   to train base models.
+```
+
+📌 **TLDR:** "Bedrock = managed, serverless API to access foundation models (Claude, Llama, Mistral, Titan) via ONE unified Converse API. Not a model — an orchestration layer. Key features: Knowledge Bases (managed RAG — S3 docs → chunk → embed → vector search → answer with citations), Agents (multi-step reasoning with Action Groups/Lambda), Guardrails (content filter + PII redaction + topic denial + prompt injection defense), fine-tuning (SFT + RFT). Data stays in AWS boundary. Pay-per-token. Use Bedrock for GenAI apps; SageMaker for custom ML training."
+
+---
 
 ## 23. Google Cloud Platform (GCP) — Cloud Infrastructure & Services
 
@@ -26745,6 +27339,677 @@ gcloud asset analyze-iam-policy \
 ```
 
 📌 **TLDR:** "For GCP interviews: know Compute Engine (VMs with custom machine types), Cloud Run (serverless containers — scale to zero), GKE (managed K8s — Autopilot mode + Workload Identity), Cloud SQL/Spanner (SQL — Spanner is globally distributed), Pub/Sub (messaging), BigQuery (serverless data warehouse), Cloud Functions (event-driven), and global networking (global VPC, global LB, Shared VPC). For ops questions: know Workload Identity (keyless auth for GKE pods), Workload Identity Federation (keyless auth for on-prem), VPC peering vs Shared VPC (GCP unique!), Firewall Rules with SA targeting (no NACLs in GCP), Cloud SQL Auth Proxy for DB connectivity, Private Google Access for private subnet API access, and VPC Service Controls for data exfiltration prevention."
+
+---
+
+### 23.14 GCP Vertex AI — Unified AI/ML & Generative AI Platform
+
+> **📣 Definition:** _"Vertex AI is Google Cloud's unified platform for building, deploying, and managing AI/ML models AND generative AI applications. It's the native home of Gemini (Google's frontier model family), Model Garden (200+ open/partner models), managed RAG, agents (ADK + Agent Engine), evaluation, and MLOps pipelines. Think of it as 'GCP's answer to Bedrock + SageMaker combined' — one platform for both custom ML training AND GenAI applications, deeply integrated with BigQuery, Cloud Storage, and Google's data stack."_
+
+```
+What IS Vertex AI? (for someone who knows nothing):
+
+  WITHOUT Vertex AI:
+    - Call Gemini API directly (limited to basic chat)
+    - Host open models yourself on GKE (manage GPUs, scaling, serving)
+    - Build your own RAG pipeline, evaluation, monitoring
+    - Stitch together separate tools for training, serving, agents
+
+  WITH Vertex AI:
+    - ONE platform for everything AI/ML:
+      ✓ Access Gemini models + 200+ open/partner models (Model Garden)
+      ✓ Managed RAG (auto-chunk, embed, retrieve from your data)
+      ✓ Agent development (ADK framework + Agent Engine runtime)
+      ✓ Fine-tuning (SFT, RLHF) without managing GPUs
+      ✓ Evaluation service (automated quality testing)
+      ✓ MLOps pipelines (training → deployment → monitoring)
+    - Deeply integrated with BigQuery, Cloud Storage, Pub/Sub
+    - Same Google infrastructure that runs Search & YouTube
+
+  Python analogy:
+    Vertex AI ≈ an all-in-one ML framework (like scikit-learn + MLflow +
+                LangChain + FastAPI, but managed by Google)
+    Model Garden ≈ PyPI for AI models (browse, deploy, swap)
+```
+
+#### Vertex AI Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        VERTEX AI PLATFORM                           │
+│                                                                      │
+│  ┌───────────────────────────────────────────────────────────────┐   │
+│  │                    MODEL GARDEN (200+ models)                 │   │
+│  │  Google:    Gemini 3.5 Pro/Flash, Gemma, Imagen, Chirp       │   │
+│  │  Partners:  Claude 4.x, Llama 4, Mistral, DeepSeek           │   │
+│  │  Open:      Gemma, CodeGemma, PaLI (via prebuilt containers)  │   │
+│  │  Deploy:    Managed APIs (MaaS) or self-hosted endpoints      │   │
+│  └───────────────────────────────────────────────────────────────┘   │
+│                            │                                         │
+│  ┌──────────────┐  ┌───────┴───────┐  ┌──────────────────────┐      │
+│  │  GROUNDING   │  │  GEMINI API   │  │   RAG ENGINE         │      │
+│  │              │  │ (generate_    │  │   (managed RAG)       │      │
+│  │ - Google     │  │  content)     │  │                       │      │
+│  │   Search     │  │              │  │  GCS/BigQuery → Chunk  │      │
+│  │ - Enterprise │  │ - Text       │  │  → Embed → Vector DB   │      │
+│  │   data       │  │ - Multimodal │  │  → Retrieve → Answer   │      │
+│  │ - Custom     │  │ - Streaming  │  │                       │      │
+│  │   datastores │  │ - Tool call  │  │  (Vertex AI Search,   │      │
+│  └──────────────┘  └──────────────┘  │   Weaviate, Pinecone) │      │
+│                            │          └──────────────────────┘      │
+│  ┌─────────────────────────┴─────────────────────────────────────┐  │
+│  │                    AGENT PLATFORM                              │  │
+│  │  Agent Development Kit (ADK) — code-first Python framework    │  │
+│  │  Agent Studio — low-code visual builder                       │  │
+│  │  Agent Engine — managed runtime (memory, identity, sessions)  │  │
+│  │  Memory Bank — persistent long-term agent memory              │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌──────────────────────────────┐  ┌─────────────────────────────┐  │
+│  │  CUSTOMIZATION              │  │  MLOPS & EVALUATION         │  │
+│  │  - SFT (Supervised Fine-    │  │  - Gen AI Evaluation Service │  │
+│  │    Tuning)                  │  │  - Vertex AI Pipelines       │  │
+│  │  - RLHF / RLVR             │  │  - Model Monitoring          │  │
+│  │  - Distillation             │  │  - Experiments & Metadata    │  │
+│  │  - PEFT (LoRA, Adapter)     │  │  - Feature Store             │  │
+│  └──────────────────────────────┘  └─────────────────────────────┘  │
+│                                                                      │
+│  Security: VPC-SC, IAM, CMEK, DLP, Audit Logs                      │
+│  Governance: Agent Gateway, Agent Identity, Cloud API Registry      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+#### Gemini API — Generating Content (Python)
+
+```python
+from google import genai
+from google.genai import types
+
+# === Basic: Generate text with Gemini ===
+client = genai.Client()
+
+response = client.models.generate_content(
+    model="gemini-3.5-flash",  # or "gemini-3.5-pro" for complex tasks
+    contents="Explain ACID properties in 3 sentences.",
+    config=types.GenerateContentConfig(
+        temperature=0.3,
+        max_output_tokens=512,
+        system_instruction="You are a senior database architect. Be concise."
+    )
+)
+
+print(response.text)
+print(f"Tokens: {response.usage_metadata.prompt_token_count} in, "
+      f"{response.usage_metadata.candidates_token_count} out")
+```
+
+```python
+# === Multi-turn conversation ===
+chat = client.chats.create(model="gemini-3.5-flash")
+
+response1 = chat.send_message("What is a closure in Python?")
+print(response1.text)
+
+response2 = chat.send_message("Now show me a real-world example.")
+print(response2.text)  # remembers context from previous turn!
+```
+
+```python
+# === Streaming — real-time token-by-token output ===
+response = client.models.generate_content_stream(
+    model="gemini-3.5-flash",
+    contents="Write a Python decorator tutorial."
+)
+
+for chunk in response:
+    print(chunk.text, end="", flush=True)
+```
+
+```python
+# === Multimodal — text + images + video + audio ===
+import pathlib
+
+# Gemini is natively multimodal — send images alongside text
+image_bytes = pathlib.Path("architecture_diagram.png").read_bytes()
+
+response = client.models.generate_content(
+    model="gemini-3.5-pro",
+    contents=[
+        types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+        "Explain this architecture diagram. What are the bottlenecks?"
+    ]
+)
+print(response.text)
+# Gemini can analyze images, PDFs, videos, and audio natively!
+```
+
+```python
+# === Tool Use / Function Calling ===
+get_weather = types.FunctionDeclaration(
+    name="get_weather",
+    description="Get current weather for a location",
+    parameters={
+        "type": "object",
+        "properties": {
+            "location": {"type": "string", "description": "City name"},
+            "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+        },
+        "required": ["location"]
+    }
+)
+
+response = client.models.generate_content(
+    model="gemini-3.5-flash",
+    contents="What's the weather in London?",
+    config=types.GenerateContentConfig(
+        tools=[types.Tool(function_declarations=[get_weather])]
+    )
+)
+
+# Model returns a function_call part:
+# response.candidates[0].content.parts[0].function_call
+# → name="get_weather", args={"location": "London"}
+# You call the actual API, then send the result back
+```
+
+```
+Key Gemini model tiers (which to use when):
+
+  ┌──────────────────┬────────────────────────────────────────────┐
+  │ Model            │ Use case                                   │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Gemini 3.5 Pro   │ Complex reasoning, long context (1M+       │
+  │                  │ tokens), multi-step analysis, research     │
+  │                  │ Best quality, higher cost                   │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Gemini 3.5 Flash │ Fast, cost-effective for standard tasks    │
+  │                  │ Chat, summarization, classification         │
+  │                  │ Best balance of speed/cost/quality          │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Gemini Spark     │ On-device / lightweight / edge             │
+  │                  │ Mobile apps, IoT, low-latency              │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Gemma (open)     │ Self-hosted, fine-tunable, fully open      │
+  │                  │ Privacy-sensitive workloads                 │
+  └──────────────────┴────────────────────────────────────────────┘
+
+  Gemini's superpower: 1M+ token context window
+    → can process entire codebases, books, or hours of video in ONE call
+    → competitors typically cap at 128K-200K tokens
+```
+
+#### Model Garden — 200+ Models at Your Fingertips
+
+```
+Model Garden = the "app store" for AI models on GCP
+
+  Three categories:
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ 1. Google Models (Managed API — zero infrastructure)           │
+  │    Gemini Pro/Flash, Gemma, Imagen (images), Chirp (speech),   │
+  │    Codey (code), Embeddings (text-embedding-005)               │
+  │                                                                 │
+  │ 2. Partner Models (Managed API — from Model Garden)            │
+  │    Anthropic Claude 4.x, Llama 4, Mistral, DeepSeek            │
+  │    Access via managed endpoints (like Bedrock's catalog)        │
+  │                                                                 │
+  │ 3. Open Models (Self-hosted on Vertex AI endpoints)            │
+  │    Gemma, Llama, Mistral, Falcon — deploy with prebuilt        │
+  │    containers (vLLM, TGI) on your chosen GPU instances          │
+  │    Full control: instance type, autoscaling, batching           │
+  └─────────────────────────────────────────────────────────────────┘
+
+  Interview answer:
+    "Model Garden lets you BROWSE, EVALUATE, and DEPLOY 200+ models
+     from a single catalog. Google models = managed API (serverless).
+     Partner models = managed endpoints. Open models = self-hosted on
+     Vertex AI endpoints with GPU infrastructure you control."
+```
+
+#### Grounding — Reducing Hallucinations
+
+```
+Grounding = forcing the model to cite REAL sources instead of making things up
+
+  Two grounding modes:
+
+  1. Google Search Grounding:
+     → model can search the web for real-time, factual information
+     → returns citations with source URLs
+     → great for: current events, factual Q&A, real-time data
+
+  2. Enterprise Data Grounding:
+     → ground answers in YOUR data (BigQuery, GCS, Vertex AI Search)
+     → model only answers based on your documents
+     → great for: customer support, internal knowledge base
+```
+
+```python
+# === Google Search Grounding ===
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+
+response = client.models.generate_content(
+    model="gemini-3.5-flash",
+    contents="Who won the Champions League in 2025?",
+    config=types.GenerateContentConfig(
+        tools=[types.Tool(google_search=types.GoogleSearch())]
+    )
+)
+
+print(response.text)
+# Response includes citations with web source URLs!
+# → grounding_metadata contains search results used
+```
+
+```python
+# === Enterprise Data Grounding (Vertex AI Search) ===
+response = client.models.generate_content(
+    model="gemini-3.5-flash",
+    contents="What is our refund policy for enterprise customers?",
+    config=types.GenerateContentConfig(
+        tools=[types.Tool(
+            retrieval=types.Retrieval(
+                source=types.VertexAISearch(
+                    datastore=f"projects/{PROJECT}/locations/global/"
+                              f"collections/default_collection/"
+                              f"dataStores/{DATASTORE_ID}"
+                )
+            )
+        )]
+    )
+)
+# Model answers ONLY from your enterprise data, not its training data
+```
+
+#### RAG Engine — Managed Retrieval-Augmented Generation
+
+```
+Vertex AI RAG Engine = fully managed RAG pipeline
+
+  Flow:
+    1. Create a RAG corpus (knowledge base)
+    2. Import files from GCS, Google Drive, or URLs
+    3. Engine auto-chunks, embeds, and indexes
+    4. At query time: retrieve + generate with citations
+
+  Compared to building RAG yourself:
+    ┌──────────────────────┬────────────────────────────────────┐
+    │ Manual RAG           │ Vertex AI RAG Engine               │
+    ├──────────────────────┼────────────────────────────────────┤
+    │ Choose chunking algo │ Auto-chunking (configurable)       │
+    │ Run embedding model  │ Auto-embedding (text-embedding-005)│
+    │ Set up vector DB     │ Managed vector store               │
+    │ Build retrieval API  │ retrieve_and_generate() API        │
+    │ Handle source citing │ Built-in source attribution        │
+    │ Manage updates/sync  │ Incremental sync from GCS/Drive    │
+    └──────────────────────┴────────────────────────────────────┘
+```
+
+```python
+# === Vertex AI RAG Engine ===
+from vertexai import rag
+import vertexai
+
+vertexai.init(project="my-project", location="us-central1")
+
+# Step 1: Create a RAG corpus
+corpus = rag.create_corpus(
+    display_name="product-knowledge-base",
+    embedding_model_config={
+        "publisher": "google",
+        "model": "text-embedding-005"
+    }
+)
+
+# Step 2: Import documents
+rag.import_files(
+    corpus_name=corpus.name,
+    paths=["gs://my-bucket/product-docs/"],
+    chunk_size=512,
+    chunk_overlap=100
+)
+
+# Step 3: Query with RAG
+from vertexai.generative_models import GenerativeModel, Tool
+
+rag_tool = Tool.from_retrieval(
+    retrieval=rag.Retrieval(
+        source=rag.VertexRagStore(
+            rag_resources=[rag.RagResource(rag_corpus=corpus.name)],
+            similarity_top_k=5
+        )
+    )
+)
+
+model = GenerativeModel("gemini-3.5-flash", tools=[rag_tool])
+response = model.generate_content("What are the new features in v2.0?")
+print(response.text)  # answers grounded in YOUR documents
+```
+
+#### Agent Development Kit (ADK) & Agent Engine
+
+```
+GCP's agent platform has three layers:
+
+  1. Agent Development Kit (ADK) — code-first Python framework
+     → write agents in Python (similar to LangGraph/CrewAI)
+     → define tools, reasoning logic, multi-agent orchestration
+     → framework-agnostic (works with LangChain too)
+
+  2. Agent Studio — low-code visual builder
+     → drag-and-drop agent creation
+     → natural language to define agent behavior
+     → good for: prototyping, non-developer teams
+
+  3. Agent Engine — managed runtime
+     → deploy agents without managing infrastructure
+     → provides: sessions, memory (Memory Bank), identity, observability
+     → handles: scaling, state management, tool registry
+
+  New enterprise features:
+    - Agent Gateway:  centralized policy enforcement, prompt injection protection
+    - Agent Identity: cryptographic per-agent identity with audit trails
+    - Memory Bank:    persistent long-term memory across agent sessions
+    - Cloud API Registry: governed tool catalog (admin-curated)
+```
+
+```python
+# === Agent Development Kit (ADK) example ===
+from google.adk import Agent, Tool
+
+# Define tools
+@Tool
+def search_database(query: str, table: str) -> dict:
+    """Search the product database for matching records."""
+    # Your database query logic here
+    return {"results": [...]}
+
+@Tool
+def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email notification."""
+    # Your email sending logic here
+    return "Email sent successfully"
+
+# Create an agent
+agent = Agent(
+    model="gemini-3.5-flash",
+    name="customer-support-agent",
+    instruction="""You are a customer support agent. 
+    Use search_database to find relevant information.
+    Use send_email to escalate issues to the team.""",
+    tools=[search_database, send_email]
+)
+
+# Run the agent
+response = agent.run("I need a refund for order #12345")
+print(response.text)
+# Agent autonomously: searches DB → finds order → processes refund → sends email
+```
+
+#### Fine-Tuning & Customization
+
+```
+Vertex AI customization options:
+
+  ┌────────────────────────┬─────────────────────────────────────────┐
+  │ Method                 │ Details                                 │
+  ├────────────────────────┼─────────────────────────────────────────┤
+  │ System Instructions    │ Zero effort, works for 90% of cases    │
+  │                        │ Just add instructions in the prompt      │
+  ├────────────────────────┼─────────────────────────────────────────┤
+  │ Supervised Fine-Tuning │ Upload labeled JSONL to GCS             │
+  │ (SFT)                 │ Vertex AI trains a tuned model variant  │
+  │                        │ Supports: Gemini, Gemma, Llama          │
+  │                        │ Use for: domain tone, format, jargon    │
+  ├────────────────────────┼─────────────────────────────────────────┤
+  │ RLHF                  │ Human preference alignment               │
+  │                        │ For complex quality improvements         │
+  │                        │ Expensive, requires preference data      │
+  ├────────────────────────┼─────────────────────────────────────────┤
+  │ RLVR (new!)           │ Reinforcement Learning from Verifiable   │
+  │                        │ Rewards — automated correctness checks  │
+  │                        │ Great for: coding, math, factual tasks  │
+  │                        │ No human feedback needed                 │
+  ├────────────────────────┼─────────────────────────────────────────┤
+  │ Distillation           │ Train a smaller model to mimic a larger │
+  │                        │ one — same quality, fraction of the cost│
+  │                        │ Gemini Pro → Gemini Flash quality       │
+  ├────────────────────────┼─────────────────────────────────────────┤
+  │ PEFT (LoRA, Adapter)   │ Parameter-efficient fine-tuning         │
+  │                        │ Tune only a small fraction of weights   │
+  │                        │ Faster, cheaper than full SFT           │
+  └────────────────────────┴─────────────────────────────────────────┘
+```
+
+#### Gen AI Evaluation Service
+
+```
+Vertex AI Evaluation = automated quality testing for your AI
+
+  Why it matters:
+    "We fine-tuned our model. How do we KNOW it's better?"
+    "Our RAG pipeline returns answers. Are they CORRECT?"
+    "We changed the prompt. Did quality IMPROVE or REGRESS?"
+
+  What it evaluates:
+    - Text quality: coherence, fluency, safety, groundedness
+    - Retrieval quality: relevance, recall, precision
+    - Agent quality: tool call accuracy, task completion
+    - Custom metrics: your own pass/fail criteria
+
+  Two types of metrics:
+    1. Computation-based: ROUGE, BLEU, exact match (fast, cheap)
+    2. Model-based (LLM-as-judge): uses Gemini to evaluate quality
+       → more nuanced, handles subjective quality
+```
+
+```python
+# === Evaluation Service ===
+from vertexai.evaluation import EvalTask
+
+eval_task = EvalTask(
+    dataset=[
+        {
+            "prompt": "What is ACID in databases?",
+            "reference": "ACID stands for Atomicity, Consistency, Isolation, Durability...",
+        },
+        # ... more test cases
+    ],
+    metrics=["coherence", "groundedness", "safety", "fluency"],
+    experiment="prompt-v2-evaluation"
+)
+
+results = eval_task.evaluate(model=model)
+print(results.summary_metrics)
+# {"coherence": 4.2, "groundedness": 4.8, "safety": 5.0, "fluency": 4.5}
+# Run after every prompt change to detect regressions!
+```
+
+#### Vertex AI Pipelines — MLOps
+
+```
+Vertex AI Pipelines = managed workflow orchestration for ML
+
+  Python analogy:
+    Pipelines ≈ Apache Airflow DAGs, but managed by Google
+    Each step runs in its own container with defined inputs/outputs
+
+  Common pipeline:
+    Data prep → Embedding → Index → Evaluate → Deploy (if quality passes)
+
+  When to use:
+    - Automating model retraining on new data
+    - Running evaluation after fine-tuning
+    - CI/CD for ML models (retrain → evaluate → deploy → monitor)
+    - RLHF training pipelines
+
+  Built on Kubeflow Pipelines — uses @component decorators in Python
+  Integrates with: BigQuery, GCS, Vertex AI Models, Cloud Functions
+```
+
+#### Pricing Model
+
+```
+Vertex AI pricing — know this for architecture interviews:
+
+  ┌──────────────────┬────────────────────────────────────────────┐
+  │ Pricing Model    │ Details                                    │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Pay-per-use      │ Per 1M tokens (input + output)             │
+  │ (Gemini API)     │ Flash is significantly cheaper than Pro    │
+  │                  │ Free tier available for experimentation     │
+  │                  │ Best for: dev/test, variable workloads      │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Provisioned      │ Reserved throughput for production          │
+  │ Throughput       │ Predictable pricing at scale                │
+  │                  │ Best for: high-volume, latency-sensitive    │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Self-hosted      │ Pay for GPU instances (A100, H100, TPU)    │
+  │ (Model Garden)   │ Full control over cost/performance          │
+  │                  │ Best for: custom models, privacy, latency  │
+  ├──────────────────┼────────────────────────────────────────────┤
+  │ Context Caching  │ Cache long contexts for repeated queries    │
+  │                  │ Significant savings for RAG workloads       │
+  │                  │ Gemini's 1M+ context makes this powerful   │
+  └──────────────────┴────────────────────────────────────────────┘
+
+  Cost optimization:
+    ✓ Use Flash (not Pro) unless you need complex reasoning
+    ✓ Enable context caching for repeated system instructions
+    ✓ Use distillation: train Flash to match Pro quality
+    ✓ Batch requests for non-real-time workloads
+    ✓ Set max_output_tokens to limit response length
+    ✓ Monitor with Cloud Monitoring — track cost-per-query
+```
+
+#### Vertex AI vs AWS Bedrock — Complete Comparison
+
+```
+  ┌─────────────────────┬────────────────────────┬────────────────────────┐
+  │ Feature             │ Vertex AI              │ AWS Bedrock            │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Philosophy          │ Unified AI platform    │ Managed GenAI gateway  │
+  │                     │ (ML + GenAI)           │ (GenAI focused)        │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Primary model       │ Gemini (Google's own)  │ Model-agnostic         │
+  │                     │ + Model Garden         │ (multi-provider)       │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Context window      │ 1M+ tokens (Gemini)    │ Model-dependent        │
+  │                     │ → entire codebase!     │ (typically 128-200K)   │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ RAG                 │ RAG Engine + Vertex AI │ Knowledge Bases        │
+  │                     │ Search + Grounding     │ (S3 → OpenSearch)      │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Agents              │ ADK (code-first) +     │ Bedrock Agents +       │
+  │                     │ Agent Engine (runtime)  │ AgentCore (runtime)    │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Grounding           │ Google Search +        │ Guardrails contextual  │
+  │                     │ enterprise data        │ grounding              │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Guardrails          │ Agent Gateway +        │ Bedrock Guardrails     │
+  │                     │ Agent Identity         │ (content/PII/topic)    │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Multimodal          │ Native (text, image,   │ Model-dependent        │
+  │                     │ video, audio, code)    │                        │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Custom ML training  │ ✅ Full MLOps platform │ ❌ Use SageMaker       │
+  │                     │ (Pipelines, AutoML)    │                        │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Data integration    │ BigQuery, GCS native   │ S3, Glue, Athena       │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Evaluation          │ Gen AI Evaluation      │ Manual / CloudWatch    │
+  │                     │ Service (automated)    │                        │
+  ├─────────────────────┼────────────────────────┼────────────────────────┤
+  │ Best for            │ Data-heavy AI, Google  │ Multi-model flexibility,│
+  │                     │ ecosystem, long context│ AWS-native enterprises  │
+  └─────────────────────┴────────────────────────┴────────────────────────┘
+
+  Interview answer:
+    "Choose Vertex AI if your data lives in BigQuery/GCS, you want Gemini's
+     1M+ context window, or you need a unified ML+GenAI platform.
+     Choose Bedrock if you're AWS-native, need multi-provider model
+     flexibility, or are in a heavily regulated industry (FedRAMP).
+     Many enterprises use BOTH behind a model gateway (LiteLLM)."
+```
+
+#### Vertex AI Interview Q&A
+
+```
+Q: What is Vertex AI?
+A: Google Cloud's unified AI/ML platform. It combines: Gemini API access,
+   Model Garden (200+ models), managed RAG, agent framework (ADK),
+   evaluation service, fine-tuning, and full MLOps pipelines. It's the
+   native home of Gemini AND a complete ML training platform — like
+   Bedrock + SageMaker combined in one service.
+
+Q: How is Vertex AI different from just calling the Gemini API directly?
+A: The Gemini API (via Google AI Studio) is for prototyping. Vertex AI adds:
+   enterprise security (VPC-SC, IAM, CMEK), managed RAG, agent runtime,
+   evaluation, fine-tuning, MLOps pipelines, BigQuery integration, and
+   SLAs. Use Gemini API for hackathons; Vertex AI for production.
+
+Q: What is Model Garden?
+A: A catalog of 200+ models you can deploy on Vertex AI. Three tiers:
+   (1) Google models = managed API (Gemini, Gemma, Imagen),
+   (2) Partner models = managed endpoints (Claude, Llama, Mistral),
+   (3) Open models = self-hosted on GPU instances with prebuilt containers.
+
+Q: How do you implement RAG with Vertex AI?
+A: Three options:
+   (1) Vertex AI RAG Engine: managed pipeline — create corpus, import files
+       from GCS, auto-chunk/embed/index, query with generate_content.
+   (2) Grounding with Vertex AI Search: point model at a datastore of your
+       documents, model retrieves and cites automatically.
+   (3) Google Search Grounding: for real-time web facts — add GoogleSearch
+       tool to generate_content call.
+
+Q: What's Google Search Grounding?
+A: A tool you attach to Gemini that lets it search the web for real-time
+   information. Model returns citations with source URLs. Great for factual
+   Q&A about current events. Add types.Tool(google_search=GoogleSearch())
+   to your config — that's it.
+
+Q: What is the Agent Development Kit (ADK)?
+A: A code-first Python framework for building AI agents. Define tools with
+   @Tool decorator, create agents with instructions, and orchestrate
+   multi-agent systems. Deploy to Agent Engine for managed runtime with
+   sessions, memory (Memory Bank), and observability.
+
+Q: How does Vertex AI evaluation work?
+A: The Gen AI Evaluation Service provides automated quality testing.
+   Define test cases (prompt + expected output), choose metrics
+   (coherence, groundedness, safety, fluency), run EvalTask.
+   Supports computation-based (ROUGE, BLEU) and model-based (LLM-as-judge)
+   metrics. Run after every prompt/model change to detect regressions.
+
+Q: Vertex AI vs Bedrock — when to choose which?
+A: Vertex AI: data in BigQuery/GCS, need Gemini's 1M+ token context,
+   want unified ML+GenAI platform, Google ecosystem.
+   Bedrock: AWS-native, need multi-provider model flexibility (swap
+   Claude/Llama/Mistral easily), heavily regulated (FedRAMP High).
+   Both are valid; many enterprises use a model gateway across both.
+
+Q: What fine-tuning options does Vertex AI offer?
+A: (1) SFT: labeled examples (JSONL) → tuned model. (2) RLHF: human
+   preference alignment. (3) RLVR: automated correctness rewards (new,
+   great for code/math). (4) Distillation: train Flash to match Pro.
+   (5) PEFT/LoRA: tune a fraction of weights (faster, cheaper).
+   Supports Gemini, Gemma, Llama, and other open models.
+
+Q: How does Vertex AI handle security?
+A: VPC Service Controls (data exfiltration prevention), IAM with
+   granular permissions, CMEK (customer-managed encryption keys),
+   DLP integration, Cloud Audit Logs. Agent Gateway for policy
+   enforcement. Agent Identity for per-agent auth. Data stays in
+   your GCP project — never used to train Google's models.
+```
+
+📌 **TLDR:** "Vertex AI = Google Cloud's unified AI platform (ML + GenAI). Native home of Gemini (1M+ token context window). Model Garden = 200+ models (Google + partners + open). Key features: Grounding (Google Search for real-time facts OR enterprise data for internal Q&A), RAG Engine (managed pipeline — GCS docs → chunk → embed → retrieve → answer with citations), Agent platform (ADK code framework + Agent Engine runtime + Memory Bank), Evaluation Service (automated quality testing — coherence/groundedness/safety), fine-tuning (SFT + RLHF + RLVR + distillation + PEFT). Deep BigQuery/GCS integration. Choose Vertex AI for Google ecosystem + long context; choose Bedrock for AWS-native + multi-model flexibility."
+
+---
 
 ## 24. DevOps — Docker, Kubernetes, IaC & CI/CD
 
