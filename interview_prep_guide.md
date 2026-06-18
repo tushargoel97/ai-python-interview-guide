@@ -154,6 +154,15 @@
   - [18.5 LangChain vs LangGraph (Deep Dive)](#185-langchain-vs-langgraph--orchestrating-llm-applications-deep-dive)
     - [18.5.1 LangChain Core — LCEL, Chains, Prompts & Output Parsers](#1851-langchain-core--lcel-chains-prompts--output-parsers)
     - [18.5.2 LangGraph Core — StateGraph, Nodes, Edges & Checkpointing](#1852-langgraph-core--stategraph-nodes-edges--checkpointing)
+    - [18.5.2.1 LangGraph State Management — Deep Dive](#18521-langgraph-state-management--deep-dive)
+      - [State Schema — Defining What Data Exists](#state-schema--defining-what-data-exists)
+      - [State Reducers — How Data Gets Updated](#state-reducers--how-data-gets-updated)
+      - [`add_messages` Reducer — The Smart Message Handler](#add_messages-reducer--the-smart-message-handler)
+      - [Multi-Schema — Input, Output & Private State](#multi-schema--input-output--private-state)
+      - [Message Memory Management — Handling Long Conversations](#message-memory-management--handling-long-conversations)
+      - [State Management Interview Q&A](#state-management-interview-qa)
+    - [Long-Term Memory — Store, Cross-Thread Knowledge & Memory Taxonomy](#long-term-memory--store-cross-thread-knowledge--memory-taxonomy)
+      - [Long-Term Memory Interview Q&A](#long-term-memory-interview-qa)
     - [18.5.3 LangGraph Advanced — HITL, Multi-Agent, Streaming](#1853-langgraph-advanced-patterns--hitl-multi-agent-streaming)
     - [18.5.4 Tool Calling — Custom Tools, ToolNode & Error Handling](#1854-langchain-tool-calling--custom-tools-toolnode--error-handling)
     - [18.5.5 LangChain & LangGraph Interview Q&A Bank](#1855-langchain--langgraph-interview-qa-bank)
@@ -376,6 +385,27 @@
     - [Testing Strategies](#testing-strategies)
     - [Micro-Frontends](#micro-frontends--scaling-frontend-teams)
     - [Full-Stack Architecture](#full-stack-architecture--putting-it-all-together)
+
+**Authentication & Authorization**
+
+- [28. Authentication & Authorization — OAuth 2.0, OIDC, JWT & SSO](#28-authentication--authorization--oauth-20-oidc-jwt--sso)
+  - [28.1 OAuth 2.0 — The Complete Protocol](#281-oauth-20--the-complete-protocol)
+    - [The 4 Roles in OAuth 2.0](#the-4-roles-in-oauth-20)
+    - [Grant Types — Which Flow for Which Scenario](#grant-types--which-flow-for-which-scenario)
+    - [Authorization Code + PKCE — The Gold Standard](#authorization-code--pkce--the-gold-standard)
+    - [Client Credentials — Machine-to-Machine](#client-credentials--machine-to-machine)
+    - [Device Code — Smart TVs, IoT, CLI Tools](#device-code--smart-tvs-iot-cli-tools)
+  - [28.2 Tokens — Access, Refresh, ID](#282-tokens--access-refresh-id)
+    - [Token Lifecycle](#token-lifecycle)
+    - [JWT Structure — What's Inside](#jwt-structure--whats-inside)
+  - [28.3 OpenID Connect (OIDC) — Identity Layer](#283-openid-connect-oidc--identity-layer)
+  - [28.4 Token Storage Security](#284-token-storage-security)
+  - [28.5 SAML vs OIDC vs OAuth 2.0](#285-saml-vs-oidc-vs-oauth-20)
+  - [28.6 OAuth 2.0 vs OAuth 2.1](#286-oauth-20-vs-oauth-21)
+  - [28.7 SSO — Single Sign-On](#287-sso--single-sign-on)
+  - [28.8 Real-World Implementation (FastAPI)](#288-real-world-implementation-fastapi)
+  - [28.9 Security Checklist & Common Attacks](#289-security-checklist--common-attacks)
+  - [28.10 OAuth 2.0 Interview Q&A](#2810-oauth-20-interview-qa)
 
 **Interview Prep**
 
@@ -13660,6 +13690,957 @@ async with AsyncPostgresSaver.from_conn_string(DATABASE_URL) as checkpointer:
 | `SqliteSaver` | Local dev | SQLite file |
 | `PostgresSaver` | Production | PostgreSQL |
 | `AsyncPostgresSaver` | Async production | PostgreSQL (async) |
+
+---
+
+#### 18.5.2.1 LangGraph State Management — Deep Dive
+
+> **Layman:** _"State is the MEMORY of your graph — a shared notebook that every node can read and write to. The state schema defines WHAT data exists, reducers define HOW data is updated (overwrite vs append vs merge), and multi-schema separates what the user sees from what nodes use internally."_
+
+**Why state management matters:**
+
+```
+In a simple Python function:
+    result = my_func(input)  ← stateless, no memory
+
+In a LangGraph graph:
+    Every node reads from and writes to a SHARED STATE object.
+    State persists across nodes, turns, and even server restarts.
+    If you design state wrong → data loss, race conditions, or bloated context.
+
+    State management = the #1 thing that separates a toy prototype
+    from a production-ready agent.
+```
+
+##### State Schema — Defining What Data Exists
+
+```python
+# === Option 1: TypedDict (recommended for performance) ===
+from typing import TypedDict, Annotated
+import operator
+
+class AgentState(TypedDict):
+    query: str                                    # simple field (last-write-wins)
+    messages: Annotated[list, operator.add]        # reducer: APPEND to list
+    sources: list[str]                             # simple field (overwritten)
+    iteration: int                                 # simple field (overwritten)
+
+# === Option 2: Pydantic BaseModel (runtime validation) ===
+from pydantic import BaseModel, Field
+
+class AgentState(BaseModel):
+    query: str = Field(..., description="User's original query")
+    messages: Annotated[list, operator.add] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    iteration: int = 0
+
+# When to use which:
+#   TypedDict  → fast, lightweight, no runtime validation
+#                Use for: internal state, performance-critical graphs
+#   Pydantic   → runtime validation, serialization, better error messages
+#                Use for: input/output boundaries, complex nested schemas
+```
+
+##### State Reducers — How Data Gets Updated
+
+```
+The MOST IMPORTANT concept in LangGraph state:
+
+  WITHOUT a reducer (default = "last-write-wins"):
+    Node A returns {"sources": ["wiki"]}     → state.sources = ["wiki"]
+    Node B returns {"sources": ["arxiv"]}    → state.sources = ["arxiv"]
+    Result: ["wiki"] is LOST! Node B overwrote Node A's data.
+
+  WITH a reducer (Annotated[list, operator.add]):
+    Node A returns {"sources": ["wiki"]}     → state.sources = ["wiki"]
+    Node B returns {"sources": ["arxiv"]}    → state.sources = ["wiki", "arxiv"]
+    Result: both sources are KEPT! Reducer APPENDED instead of overwriting.
+
+  Rule of thumb:
+    ┌────────────────────────┬────────────────────────────────────┐
+    │ Field type             │ Reducer strategy                   │
+    ├────────────────────────┼────────────────────────────────────┤
+    │ Single value (str/int) │ No reducer (last-write-wins is OK) │
+    │ Growing list           │ Annotated[list, operator.add]      │
+    │ Message history        │ Annotated[list, add_messages]      │
+    │ Counter                │ Annotated[int, operator.add]       │
+    │ Unique items only      │ Custom reducer (set-based)         │
+    │ "Keep latest N"        │ Custom reducer (sliding window)    │
+    └────────────────────────┴────────────────────────────────────┘
+```
+
+```python
+# === Built-in reducers ===
+from typing import Annotated, TypedDict
+import operator
+from langgraph.graph import add_messages
+
+class AgentState(TypedDict):
+    # 1. No reducer — LAST WRITE WINS (default)
+    current_agent: str           # whoever writes last, wins
+    status: str                  # "researching", "done", etc.
+
+    # 2. operator.add — APPEND for lists
+    sources: Annotated[list[str], operator.add]
+    # Node A: {"sources": ["a"]} → ["a"]
+    # Node B: {"sources": ["b"]} → ["a", "b"]
+
+    # 3. operator.add — SUM for integers
+    tool_calls: Annotated[int, operator.add]
+    # Node A: {"tool_calls": 2} → 2
+    # Node B: {"tool_calls": 1} → 3
+
+    # 4. add_messages — SMART MERGE for chat messages
+    messages: Annotated[list, add_messages]
+    # Handles: append new, update existing (by ID), remove by ID
+    # This is what MessagesState uses internally!
+```
+
+```python
+# === Custom reducers — full control ===
+
+# Reducer signature: (current_value, new_value) → merged_value
+
+# Example 1: Keep only unique items (deduplication)
+def unique_list(current: list, new: list) -> list:
+    """Append only items not already in the list."""
+    seen = set(current)
+    return current + [item for item in new if item not in seen]
+
+# Example 2: Keep only the latest N items (sliding window)
+def latest_n(n: int):
+    """Factory that creates a reducer keeping the last N items."""
+    def reducer(current: list, new: list) -> list:
+        combined = current + new
+        return combined[-n:]  # keep only last N
+    return reducer
+
+# Example 3: Merge dicts (deep merge)
+def merge_dicts(current: dict, new: dict) -> dict:
+    """Merge new keys into current dict without losing existing keys."""
+    merged = {**current, **new}
+    return merged
+
+# Example 4: Max value (keep the highest score)
+def keep_max(current: float, new: float) -> float:
+    return max(current, new)
+
+class AgentState(TypedDict):
+    tags: Annotated[list[str], unique_list]           # no duplicates
+    recent_queries: Annotated[list[str], latest_n(5)] # last 5 only
+    metadata: Annotated[dict, merge_dicts]            # accumulate keys
+    confidence: Annotated[float, keep_max]            # keep best score
+```
+
+##### `add_messages` Reducer — The Smart Message Handler
+
+```python
+from langgraph.graph import add_messages
+from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
+
+# add_messages does THREE things:
+# 1. APPEND new messages (default behavior)
+# 2. UPDATE existing messages (if same ID)
+# 3. REMOVE messages (via RemoveMessage)
+
+messages = [
+    HumanMessage("Hello", id="msg-1"),
+    AIMessage("Hi there!", id="msg-2"),
+]
+
+# --- Append ---
+update = [HumanMessage("What's the weather?", id="msg-3")]
+result = add_messages(messages, update)
+# → [msg-1, msg-2, msg-3]  (appended)
+
+# --- Update (same ID overwrites) ---
+update = [AIMessage("Hi! How can I help?", id="msg-2")]  # same ID!
+result = add_messages(messages, update)
+# → [msg-1, updated-msg-2]  (msg-2 content replaced)
+
+# --- Remove ---
+update = [RemoveMessage(id="msg-1")]
+result = add_messages(messages, update)
+# → [msg-2]  (msg-1 deleted)
+```
+
+##### Multi-Schema — Input, Output & Private State
+
+```
+Problem: your graph has internal "scratchpad" fields that users shouldn't see.
+
+  Internal state:        What the user provides:     What the user gets back:
+    query                  query ✅                    answer ✅
+    intermediate_steps     ❌ (internal only)          ❌ (hidden)
+    raw_llm_output         ❌ (internal only)          ❌ (hidden)
+    answer                 ❌ (computed internally)    sources ✅
+    sources                ❌ (computed internally)
+
+  Solution: define SEPARATE schemas for input, output, and internal state.
+```
+
+```python
+from typing import TypedDict, Annotated
+from pydantic import BaseModel, Field
+from langgraph.graph import StateGraph, START, END
+import operator
+
+# === Internal state — used by nodes (full kitchen) ===
+class InternalState(TypedDict):
+    query: str
+    messages: Annotated[list, operator.add]
+    raw_search_results: list[dict]       # internal scratchpad
+    intermediate_reasoning: str          # internal scratchpad
+    answer: str
+    sources: list[str]
+    confidence: float
+
+# === Input schema — what the user provides (front door) ===
+class InputState(BaseModel):
+    query: str = Field(..., description="The user's question")
+
+# === Output schema — what the user receives (clean response) ===
+class OutputState(BaseModel):
+    answer: str = Field(..., description="The final answer")
+    sources: list[str] = Field(default_factory=list)
+    confidence: float = Field(0.0)
+
+# === Build graph with separate schemas ===
+def search_node(state: InternalState) -> dict:
+    """Has access to ALL internal fields."""
+    return {
+        "raw_search_results": [{"doc": "..."}],  # internal only
+        "intermediate_reasoning": "Found 3 relevant docs...",  # internal only
+        "sources": ["https://docs.python.org"],
+    }
+
+def answer_node(state: InternalState) -> dict:
+    return {
+        "answer": f"Based on {len(state['sources'])} sources: ...",
+        "confidence": 0.92,
+    }
+
+graph = StateGraph(
+    InternalState,      # full state used by nodes
+    input=InputState,   # validates + restricts user input
+    output=OutputState, # filters what user sees in response
+)
+graph.add_node("search", search_node)
+graph.add_node("answer", answer_node)
+graph.add_edge(START, "search")
+graph.add_edge("search", "answer")
+graph.add_edge("answer", END)
+
+app = graph.compile()
+
+# User invokes with InputState:
+result = app.invoke({"query": "What is ACID?"})
+# result = {"answer": "Based on...", "sources": [...], "confidence": 0.92}
+# → raw_search_results and intermediate_reasoning are HIDDEN from user!
+```
+
+```
+Private state between specific nodes:
+
+  Sometimes you need data that flows between SPECIFIC nodes
+  but shouldn't be in the main graph state at all.
+
+  Solution: use a subgraph with its own isolated state.
+
+  ┌───────────────── Main Graph State ──────────────────┐
+  │  query, messages, answer                             │
+  │                                                      │
+  │  ┌─── Subgraph (own private state) ───┐             │
+  │  │  internal_scores, raw_embeddings,  │             │
+  │  │  candidate_chunks (private!)        │             │
+  │  │                                     │             │
+  │  │  Node: retrieve → rank → select     │             │
+  │  └─────────────────────────────────────┘             │
+  │  ↑ receives: query                                   │
+  │  ↓ returns: answer, sources (only these leak out)    │
+  └──────────────────────────────────────────────────────┘
+```
+
+##### Message Memory Management — Handling Long Conversations
+
+```
+The core problem:
+  LLMs have a CONTEXT WINDOW (e.g., 128K tokens for GPT-4o).
+  Long conversations can EXCEED this limit.
+  
+  You have 3 strategies:
+  ┌───────────────────┬────────────────────────────────────────────┐
+  │ Strategy          │ How it works                               │
+  ├───────────────────┼────────────────────────────────────────────┤
+  │ 1. Trim           │ Keep last N messages, discard older ones  │
+  │   (trim_messages)  │ Fast but LOSES context                    │
+  │                   │ Use for: simple chatbots, low-stakes       │
+  ├───────────────────┼────────────────────────────────────────────┤
+  │ 2. Summarize      │ Condense old messages into a summary      │
+  │   + RemoveMessage  │ Preserves context, costs extra LLM call  │
+  │                   │ Use for: long sessions, important context  │
+  ├───────────────────┼────────────────────────────────────────────┤
+  │ 3. Trim + Summary │ Keep last N messages + running summary    │
+  │   (hybrid)         │ Best of both worlds                       │
+  │                   │ Use for: production agents                 │
+  └───────────────────┴────────────────────────────────────────────┘
+```
+
+```python
+# === Strategy 1: trim_messages — keep conversation within token limits ===
+from langchain_core.messages import trim_messages, SystemMessage
+
+# Trim by token count (recommended for production)
+trimmed = trim_messages(
+    messages,
+    max_tokens=4000,                 # max tokens to keep
+    token_counter=len,               # or use model.get_num_tokens
+    strategy="last",                 # keep LAST messages (most recent)
+    start_on="human",               # always start with a human message
+    include_system=True,             # always keep the system message
+    allow_partial=False,             # don't cut messages in half
+)
+
+# Trim by message count
+trimmed = trim_messages(
+    messages,
+    max_tokens=20,                   # keep last 20 messages
+    token_counter=len,               # count by number of messages
+    strategy="last",
+    include_system=True,
+)
+
+# Use in a LangGraph node:
+def call_model(state):
+    trimmed = trim_messages(
+        state["messages"],
+        max_tokens=4000,
+        token_counter=model.get_num_tokens_from_messages,
+        strategy="last",
+        include_system=True,
+    )
+    response = model.invoke(trimmed)
+    return {"messages": [response]}
+```
+
+```python
+# === Strategy 2: Summarize + RemoveMessage — preserve context ===
+from langchain_core.messages import RemoveMessage, HumanMessage, AIMessage
+from langgraph.graph import MessagesState, StateGraph, START, END
+
+class State(MessagesState):
+    summary: str = ""  # running conversation summary
+
+def should_summarize(state: State) -> str:
+    """Trigger summarization when messages exceed threshold."""
+    if len(state["messages"]) > 10:
+        return "summarize"
+    return "end"
+
+def summarize_conversation(state: State) -> dict:
+    """Condense old messages into a summary, then remove them."""
+    # Step 1: Build the summarization prompt
+    existing_summary = state.get("summary", "")
+    if existing_summary:
+        prompt = (
+            f"Existing summary:\n{existing_summary}\n\n"
+            f"New messages to incorporate:\n"
+            f"{format_messages(state['messages'][:-2])}\n\n"  # all except last 2
+            f"Produce an updated summary."
+        )
+    else:
+        prompt = (
+            f"Summarize this conversation:\n"
+            f"{format_messages(state['messages'][:-2])}"
+        )
+
+    # Step 2: Call LLM to generate summary
+    summary_response = model.invoke([HumanMessage(content=prompt)])
+
+    # Step 3: Delete old messages using RemoveMessage
+    # Keep ONLY the last 2 messages (most recent context)
+    messages_to_remove = [
+        RemoveMessage(id=msg.id)
+        for msg in state["messages"][:-2]  # remove all except last 2
+    ]
+
+    return {
+        "summary": summary_response.content,
+        "messages": messages_to_remove,  # add_messages processes RemoveMessage!
+    }
+
+def call_model(state: State) -> dict:
+    """Call LLM with summary + recent messages."""
+    system_msg = "You are a helpful assistant."
+    if state.get("summary"):
+        system_msg += f"\n\nConversation summary so far:\n{state['summary']}"
+
+    messages = [{"role": "system", "content": system_msg}] + state["messages"]
+    response = model.invoke(messages)
+    return {"messages": [response]}
+
+# Build graph with summarization
+graph = StateGraph(State)
+graph.add_node("model", call_model)
+graph.add_node("summarize", summarize_conversation)
+graph.add_edge(START, "model")
+graph.add_conditional_edges("model", should_summarize, {
+    "summarize": "summarize",
+    "end": END,
+})
+graph.add_edge("summarize", END)
+
+app = graph.compile(checkpointer=checkpointer)
+
+# Result:
+#   Turn 1-10:  messages grow normally
+#   Turn 11:    summarize_conversation fires!
+#               → old messages condensed into summary string
+#               → old messages REMOVED from state via RemoveMessage
+#               → only last 2 messages + summary remain
+#   Turn 12-20: messages grow again with summary providing context
+#   Turn 21:    summarize again... (cycle continues)
+```
+
+```
+Message memory architecture for production:
+
+  ┌────────────────────────────────────────────────────────────────┐
+  │                    YOUR APPLICATION                            │
+  │                                                                │
+  │   UI Chat Display          LangGraph Agent                     │
+  │   ┌──────────────┐        ┌─────────────────────┐            │
+  │   │ Shows ALL     │        │ LLM Context:         │            │
+  │   │ messages      │        │   system_msg          │            │
+  │   │ (full history)│        │   + summary           │            │
+  │   │              │        │   + last 5 messages    │            │
+  │   └──────┬───────┘        └──────────┬──────────┘            │
+  │          │                           │                        │
+  │          ▼                           ▼                        │
+  │   Append-only DB            Checkpointer (Postgres)           │
+  │   (YOUR database)           (LangGraph's database)            │
+  │   ┌──────────────┐        ┌─────────────────────┐            │
+  │   │ message_id    │        │ Trimmed/summarized   │            │
+  │   │ thread_id     │        │ state only           │            │
+  │   │ content       │        │ (NOT full history!)  │            │
+  │   │ created_at    │        │                      │            │
+  │   │ role          │        │ Used for: LLM calls, │            │
+  │   │ ...           │        │ resume, time-travel   │            │
+  │   │               │        │                      │            │
+  │   │ Used for: UI, │        │                      │            │
+  │   │ audit, search │        │                      │            │
+  │   └──────────────┘        └─────────────────────┘            │
+  └────────────────────────────────────────────────────────────────┘
+
+  KEY INSIGHT: the checkpointer is for LLM context, NOT for UI display.
+  Your UI should read from your own append-only database.
+  The checkpointer may have trimmed/summarized messages.
+
+  Interview answer:
+    "I use a dual-storage approach: my own database stores the complete
+     conversation history for the UI and audit trail. LangGraph's
+     checkpointer stores the trimmed/summarized state optimized for
+     LLM context. They serve different purposes."
+```
+
+##### State Management Interview Q&A
+
+```
+Q: What happens if two nodes write to the same state field without a reducer?
+A: Last-write-wins. The second node's value OVERWRITES the first. This is
+   fine for single-value fields like "status" or "current_agent", but
+   dangerous for lists or counters where you want to accumulate data.
+   Solution: use Annotated[list, operator.add] for append behavior.
+
+Q: What's the difference between operator.add and add_messages?
+A: operator.add does simple concatenation (current + new). add_messages
+   is smarter — it handles three operations: (1) append new messages,
+   (2) update existing messages (by matching ID), (3) delete messages
+   (via RemoveMessage). Use operator.add for simple lists; add_messages
+   for chat message histories.
+
+Q: When would you use a custom reducer?
+A: When built-in reducers don't match your merge logic. Common cases:
+   deduplication (set-based merge), sliding window (keep last N),
+   deep dict merge (accumulate keys), or max/min (keep best score).
+   Signature: (current_value, new_value) → merged_value.
+
+Q: How do you handle conversations that exceed the context window?
+A: Three strategies: (1) trim_messages — keep last N messages, fast but
+   lossy. (2) Summarize + RemoveMessage — condense old messages into a
+   summary string, preserve context. (3) Hybrid — keep summary + last N.
+   For production: use hybrid with a "should_summarize" conditional edge.
+
+Q: What's the difference between input/output schemas and internal state?
+A: Internal state has ALL fields (including scratchpads). Input schema
+   validates and restricts what the user can provide. Output schema
+   filters what the user receives back. Use StateGraph(InternalState,
+   input=InputState, output=OutputState) to separate concerns.
+
+Q: TypedDict vs Pydantic for state — when to use which?
+A: TypedDict for internal state (fast, no runtime overhead). Pydantic
+   for input/output boundaries (runtime validation, clear error messages,
+   serialization). In practice: Pydantic at the edges, TypedDict inside.
+
+Q: How does LangGraph state differ from LangChain memory?
+A: LangChain memory (ConversationBufferMemory, etc.) is in-process —
+   lost on restart, can't share across workers. LangGraph state is
+   checkpointed to a database after every step — persists across
+   restarts, enables time-travel, supports HITL interrupts. For
+   production: always use LangGraph checkpointing, never LangChain memory.
+```
+
+##### Long-Term Memory — Store, Cross-Thread Knowledge & Memory Taxonomy
+
+> **Layman:** _"Short-term memory is like your notepad for the current meeting — it holds what's been said in THIS conversation. Long-term memory is like your brain's filing cabinet — it remembers who you are, what you prefer, and what happened in PREVIOUS conversations. In LangGraph, the Checkpointer is your notepad, and the Store is your filing cabinet."_
+
+```
+The Complete Memory Taxonomy:
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                    AGENT MEMORY SYSTEM                          │
+  │                                                                 │
+  │  SHORT-TERM MEMORY (Checkpointer)                              │
+  │  ┌───────────────────────────────────────────────────────────┐ │
+  │  │  Scope: ONE conversation thread                           │ │
+  │  │  Stored in: PostgresSaver / SqliteSaver                   │ │
+  │  │  Contains: messages, current task state, scratchpad       │ │
+  │  │  Lifecycle: created at thread start, trimmed/summarized   │ │
+  │  │  Analogy: your notepad during a meeting                   │ │
+  │  └───────────────────────────────────────────────────────────┘ │
+  │                                                                 │
+  │  LONG-TERM MEMORY (Store)                                      │
+  │  ┌───────────────────────────────────────────────────────────┐ │
+  │  │  Scope: ACROSS all conversation threads                   │ │
+  │  │  Stored in: PostgresStore / InMemoryStore                 │ │
+  │  │  Contains: user facts, preferences, learned knowledge     │ │
+  │  │  Lifecycle: persists indefinitely (until decayed/deleted)  │ │
+  │  │  Analogy: your brain's filing cabinet                     │ │
+  │  └───────────────────────────────────────────────────────────┘ │
+  │                                                                 │
+  │  ┌──────────────┬──────────────────┬───────────────────┐      │
+  │  │ Feature      │ Checkpointer     │ Store             │      │
+  │  ├──────────────┼──────────────────┼───────────────────┤      │
+  │  │ Scope        │ Thread (session) │ Cross-thread      │      │
+  │  │ Key          │ thread_id        │ namespace + key   │      │
+  │  │ Data shape   │ Your State schema│ Arbitrary JSON    │      │
+  │  │ Auto-saved?  │ ✅ Every step    │ ❌ You call put() │      │
+  │  │ Trimming     │ trim_messages    │ TTL / manual      │      │
+  │  │ Search       │ get_state_history│ Semantic search   │      │
+  │  │ Use case     │ "What did user   │ "What does user   │      │
+  │  │              │  say 2 msgs ago?"│  ALWAYS prefer?"  │      │
+  │  └──────────────┴──────────────────┴───────────────────┘      │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+**The Three Types of Long-Term Memory (Cognitive Science → AI):**
+
+```
+Just like the human brain, AI agents need different TYPES of memory:
+
+  ┌──────────────────┬───────────────────────┬──────────────────────────┐
+  │ Memory Type      │ What it stores        │ Example                  │
+  ├──────────────────┼───────────────────────┼──────────────────────────┤
+  │ SEMANTIC         │ Facts & knowledge     │ "User works at S&P       │
+  │ (what you KNOW)  │ User preferences      │  Global as a Python dev" │
+  │                  │ Domain knowledge      │ "Prefers concise answers"│
+  │                  │                       │ "Uses PostgreSQL not     │
+  │                  │                       │  MySQL"                  │
+  ├──────────────────┼───────────────────────┼──────────────────────────┤
+  │ EPISODIC         │ Past experiences      │ "Last session, we        │
+  │ (what HAPPENED)  │ Conversation history  │  debugged a Django ORM   │
+  │                  │ Events & outcomes     │  N+1 query issue"        │
+  │                  │                       │ "User got frustrated     │
+  │                  │                       │  when I gave long code"  │
+  ├──────────────────┼───────────────────────┼──────────────────────────┤
+  │ PROCEDURAL       │ Skills & behaviors    │ "When user asks for code,│
+  │ (how to DO)      │ Self-updating prompts │  always include comments"│
+  │                  │ Learned patterns      │ "For this user, always   │
+  │                  │                       │  run tests after edits"  │
+  └──────────────────┴───────────────────────┴──────────────────────────┘
+
+  Human brain analogy:
+    Semantic  = knowing that Paris is the capital of France
+    Episodic  = remembering your trip to Paris last summer
+    Procedural = knowing how to ride a bicycle
+
+  In LangGraph:
+    Semantic  → Store namespace: ("user", user_id, "facts")
+    Episodic  → Store namespace: ("user", user_id, "episodes")
+    Procedural → Store namespace: ("agent", agent_id, "instructions")
+```
+
+**The Store API — Complete Reference:**
+
+```python
+# === LangGraph Store: CRUD + Semantic Search ===
+from langgraph.store.memory import InMemoryStore     # dev/testing
+# from langgraph.store.postgres import PostgresStore  # production (with pgvector)
+
+store = InMemoryStore()
+
+# Compile graph with BOTH checkpointer and store:
+app = graph.compile(
+    checkpointer=checkpointer,  # short-term (thread state)
+    store=store,                # long-term (cross-thread knowledge)
+)
+
+# === Inside a node: full Store API ===
+from langgraph.config import get_store
+
+def agent_node(state, config):
+    store = get_store(config)
+    user_id = config["configurable"]["user_id"]
+
+    # --- PUT: save a memory ---
+    store.put(
+        namespace=("user", user_id, "facts"),  # hierarchical namespace
+        key="fact_001",                         # unique key within namespace
+        value={
+            "content": "User prefers Python 3.12+ features",
+            "category": "preference",
+            "confidence": 0.9,
+            "source": "explicit_statement",     # user said it directly
+            "created_at": "2026-06-18",
+        },
+    )
+
+    # --- SEARCH: semantic similarity search ---
+    results = store.search(
+        namespace=("user", user_id, "facts"),
+        query="what programming language does the user prefer?",  # natural language!
+        limit=5,                                                   # top-5 results
+    )
+    # results = [Item(key="fact_001", value={...}, score=0.92), ...]
+
+    # --- GET: retrieve a specific memory by key ---
+    memory = store.get(
+        namespace=("user", user_id, "facts"),
+        key="fact_001",
+    )
+    # memory.value = {"content": "User prefers Python 3.12+...", ...}
+
+    # --- LIST: get all memories in a namespace ---
+    all_facts = store.list(
+        namespace=("user", user_id, "facts"),
+    )
+
+    # --- DELETE: remove a memory ---
+    store.delete(
+        namespace=("user", user_id, "facts"),
+        key="fact_001",
+    )
+
+    # --- Use memories in the agent's response ---
+    memory_context = "\n".join(
+        f"- {item.value['content']} (confidence: {item.value['confidence']})"
+        for item in results
+    )
+    system_prompt = (
+        f"You are a helpful assistant.\n\n"
+        f"What you know about this user:\n{memory_context}"
+    )
+    response = llm.invoke([
+        {"role": "system", "content": system_prompt},
+        *state["messages"],
+    ])
+    return {"messages": [response]}
+```
+
+**Memory Lifecycle — Extract → Store → Retrieve → Inject → Decay:**
+
+```
+How memories flow through a production agent:
+
+  User message arrives
+       │
+       ▼
+  ┌─────────────────┐     ┌─────────────────────────┐
+  │ RETRIEVE         │ ←── │ Store.search()            │
+  │ Pull relevant    │     │ "What do I know about     │
+  │ memories         │     │  this user/topic?"        │
+  └────────┬────────┘     └─────────────────────────┘
+           │
+           ▼
+  ┌─────────────────┐
+  │ INJECT           │  Memories → system prompt
+  │ Add to context   │  "User prefers concise answers.
+  │                  │   Last session: discussed Django."
+  └────────┬────────┘
+           │
+           ▼
+  ┌─────────────────┐
+  │ GENERATE         │  LLM response (context-aware!)
+  │ Call LLM         │
+  └────────┬────────┘
+           │
+           ▼
+  ┌─────────────────┐     ┌─────────────────────────┐
+  │ EXTRACT          │ ──→ │ LLM extracts noteworthy  │
+  │ What's worth     │     │ facts from the exchange  │
+  │ remembering?     │     │ "User mentioned they use │
+  │                  │     │  FastAPI, not Django"     │
+  └────────┬────────┘     └─────────────────────────┘
+           │
+           ▼
+  ┌─────────────────┐     ┌─────────────────────────┐
+  │ STORE            │ ──→ │ Store.put()               │
+  │ Save to long-term│     │ Namespace: (user, facts)  │
+  │ memory           │     │                           │
+  └────────┬────────┘     └─────────────────────────┘
+           │
+           ▼
+  ┌─────────────────┐
+  │ DECAY (optional) │  Consolidate, TTL, prune stale
+  │ Clean up over    │  memories to prevent bloat
+  │ time             │
+  └─────────────────┘
+```
+
+```python
+# === Complete memory lifecycle in a LangGraph node ===
+from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.config import get_store
+from pydantic import BaseModel
+from uuid import uuid4
+
+class ExtractedFact(BaseModel):
+    content: str
+    category: str  # "preference", "fact", "behavior", "correction"
+    confidence: float
+
+class ExtractedMemories(BaseModel):
+    memories: list[ExtractedFact]
+
+class State(MessagesState):
+    summary: str = ""
+
+def retrieve_memories(state: State, config) -> dict:
+    """Step 1: Pull relevant memories from long-term store."""
+    store = get_store(config)
+    user_id = config["configurable"]["user_id"]
+
+    # Semantic search using the user's latest message
+    last_msg = state["messages"][-1].content
+    memories = store.search(
+        ("user", user_id, "facts"),
+        query=last_msg,
+        limit=5,
+    )
+
+    # Also check for procedural memories (how to behave)
+    instructions = store.search(
+        ("user", user_id, "instructions"),
+        query=last_msg,
+        limit=3,
+    )
+
+    # Build context from memories
+    memory_text = "\n".join(f"- {m.value['content']}" for m in memories)
+    instruction_text = "\n".join(f"- {i.value['content']}" for i in instructions)
+
+    system = f"You are a helpful assistant."
+    if memory_text:
+        system += f"\n\nKnown facts about this user:\n{memory_text}"
+    if instruction_text:
+        system += f"\n\nUser-specific instructions:\n{instruction_text}"
+
+    response = llm.invoke([
+        {"role": "system", "content": system},
+        *state["messages"],
+    ])
+    return {"messages": [response]}
+
+def extract_and_store(state: State, config) -> dict:
+    """Step 2: Extract noteworthy facts and save to long-term memory."""
+    store = get_store(config)
+    user_id = config["configurable"]["user_id"]
+
+    last_exchange = state["messages"][-2:]  # user msg + AI response
+    extraction = llm.with_structured_output(ExtractedMemories).invoke(
+        f"Extract any noteworthy user preferences, facts, or behavioral "
+        f"patterns from this exchange that would be useful in future "
+        f"conversations. Only extract GENUINELY useful information.\n\n"
+        f"Exchange:\n{last_exchange}"
+    )
+
+    for fact in extraction.memories:
+        if fact.confidence >= 0.7:  # only store high-confidence facts
+            store.put(
+                ("user", user_id, "facts"),
+                str(uuid4()),
+                {
+                    "content": fact.content,
+                    "category": fact.category,
+                    "confidence": fact.confidence,
+                },
+            )
+
+    return state  # pass through
+
+# Build the graph
+graph = StateGraph(State)
+graph.add_node("respond", retrieve_memories)
+graph.add_node("remember", extract_and_store)
+graph.add_edge(START, "respond")
+graph.add_edge("respond", "remember")
+graph.add_edge("remember", END)
+
+app = graph.compile(checkpointer=checkpointer, store=store)
+
+# Invoke — agent now has BOTH short-term and long-term memory:
+config = {
+    "configurable": {
+        "thread_id": "thread-456",   # short-term: this conversation
+        "user_id": "user-123",       # long-term: this user (cross-thread)
+    }
+}
+result = app.invoke({"messages": [HumanMessage("What was that Django issue we fixed?")]}, config)
+# → agent retrieves episodic memories from previous threads!
+```
+
+**Memory Decay & TTL — Preventing Memory Bloat:**
+
+```
+Without decay, your Store grows forever. Strategies:
+
+  ┌──────────────────────┬──────────────────────────────────────────┐
+  │ Strategy             │ Implementation                           │
+  ├──────────────────────┼──────────────────────────────────────────┤
+  │ TTL (Time-to-Live)   │ Delete memories older than N days        │
+  │                      │ Background job: store.delete() for stale │
+  ├──────────────────────┼──────────────────────────────────────────┤
+  │ Consolidation        │ Periodically merge similar memories      │
+  │                      │ "Prefers Python" + "Uses Python 3.12"    │
+  │                      │ → "Prefers Python 3.12+"                 │
+  ├──────────────────────┼──────────────────────────────────────────┤
+  │ Confidence decay     │ Reduce confidence score over time        │
+  │                      │ Delete when confidence < threshold       │
+  ├──────────────────────┼──────────────────────────────────────────┤
+  │ Access-based         │ Track last_accessed timestamp            │
+  │                      │ Delete rarely-accessed memories          │
+  ├──────────────────────┼──────────────────────────────────────────┤
+  │ Contradiction        │ When new fact contradicts old one,       │
+  │ resolution           │ update the old memory (not just add)     │
+  └──────────────────────┴──────────────────────────────────────────┘
+```
+
+```python
+# === Memory decay: background consolidation ===
+import datetime
+
+async def consolidate_memories(store, user_id: str, max_age_days: int = 90):
+    """Periodic job: prune stale memories, merge duplicates."""
+    all_memories = store.list(("user", user_id, "facts"))
+    now = datetime.datetime.now()
+
+    for memory in all_memories:
+        created = datetime.datetime.fromisoformat(
+            memory.value.get("created_at", "2020-01-01")
+        )
+        age_days = (now - created).days
+
+        # Strategy 1: TTL — delete old, low-confidence memories
+        if age_days > max_age_days and memory.value.get("confidence", 0) < 0.8:
+            store.delete(("user", user_id, "facts"), memory.key)
+            continue
+
+        # Strategy 2: Confidence decay — reduce confidence over time
+        decay_factor = max(0.5, 1.0 - (age_days / 365))  # decay over a year
+        memory.value["confidence"] *= decay_factor
+        store.put(("user", user_id, "facts"), memory.key, memory.value)
+```
+
+**Production Architecture — Putting It All Together:**
+
+```
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                     PRODUCTION AGENT                            │
+  │                                                                 │
+  │  User Request (thread-456, user-123)                           │
+  │       │                                                         │
+  │       ▼                                                         │
+  │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   │
+  │  │ Retrieve  │──→│ Generate │──→│ Extract  │──→│ Store    │   │
+  │  │ Memories  │   │ Response │   │ Facts    │   │ Memories │   │
+  │  └────┬─────┘   └────┬─────┘   └────┬─────┘   └────┬─────┘   │
+  │       │              │              │              │           │
+  │       ▼              ▼              ▼              ▼           │
+  │  ┌─────────────────────────────────────────────────────────┐   │
+  │  │              STORAGE LAYER                               │   │
+  │  │                                                           │   │
+  │  │  PostgresSaver          PostgresStore                     │   │
+  │  │  (Checkpointer)         (Store)                           │   │
+  │  │  ┌─────────────────┐   ┌──────────────────────────┐     │   │
+  │  │  │ thread_id:456    │   │ ("user","123","facts")    │     │   │
+  │  │  │ messages (last 5)│   │   → "prefers Python 3.12"│     │   │
+  │  │  │ summary          │   │   → "works at S&P Global"│     │   │
+  │  │  │ current_task     │   │                          │     │   │
+  │  │  │                  │   │ ("user","123","episodes") │     │   │
+  │  │  │ SHORT-TERM       │   │   → "fixed N+1 query bug"│     │   │
+  │  │  │ This conversation│   │                          │     │   │
+  │  │  └─────────────────┘   │ ("user","123","instruct") │     │   │
+  │  │                         │   → "always add comments" │     │   │
+  │  │                         │                          │     │   │
+  │  │                         │ LONG-TERM                │     │   │
+  │  │                         │ All conversations        │     │   │
+  │  │                         └──────────────────────────┘     │   │
+  │  └─────────────────────────────────────────────────────────┘   │
+  │                                                                 │
+  │  + Append-only DB (YOUR database — for UI display & audit)     │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+##### Long-Term Memory Interview Q&A
+
+```
+Q: What's the difference between a Checkpointer and a Store in LangGraph?
+A: Checkpointer = short-term, thread-scoped memory. Auto-saves state after
+   every step. Used for: conversation continuity, time-travel, HITL resume.
+   Store = long-term, cross-thread memory. Manually read/write via put()/
+   search(). Used for: user preferences, learned facts, behavioral patterns.
+   Analogy: Checkpointer = your notepad; Store = your filing cabinet.
+
+Q: What are the three types of agent memory?
+A: (1) Semantic — facts and knowledge ("user prefers Python 3.12").
+   (2) Episodic — past experiences ("last time we debugged Django ORM").
+   (3) Procedural — skills and behaviors ("always add comments for this user").
+   Map to Store namespaces: ("user", id, "facts"), ("user", id, "episodes"),
+   ("user", id, "instructions").
+
+Q: How do you implement cross-thread memory in LangGraph?
+A: Use the Store API. Compile with store=PostgresStore(conn_string).
+   Inside nodes: get_store(config) to access it. Key by user_id (not
+   thread_id!) so memories persist across all conversations. Use
+   store.search() for semantic retrieval, inject results into system prompt.
+
+Q: How do you prevent memory bloat in a long-running agent?
+A: Five strategies: (1) TTL — delete memories older than N days.
+   (2) Consolidation — merge similar memories. (3) Confidence decay —
+   reduce scores over time, prune below threshold. (4) Access-based —
+   delete rarely-retrieved memories. (5) Contradiction resolution —
+   update (not append) when new facts contradict old ones.
+
+Q: Should the UI display messages from the Checkpointer?
+A: NO! The checkpointer may have trimmed or summarized messages — it's
+   optimized for LLM context, not UI display. Store the FULL conversation
+   in your own append-only database for UI and audit. Two separate storage
+   systems: Checkpointer for LLM context, your DB for UI display.
+
+Q: When would you use semantic search in the Store vs just get()?
+A: get() = you know the exact key ("user_preference_language").
+   search() = you want to find RELEVANT memories based on meaning.
+   Example: user asks about deployment → search finds "user uses AWS ECS"
+   even though it's stored under a different key. Search uses embeddings
+   (pgvector in PostgresStore) for similarity matching.
+
+Q: How does memory extraction work — what should an agent remember?
+A: Run an extraction node after each exchange. Use structured output
+   (Pydantic model) to extract: user preferences, stated facts,
+   behavioral corrections, and task outcomes. Filter by confidence
+   (only store ≥ 0.7). Don't store everything — that's just a log.
+   Store only what changes future behavior.
+```
 
 #### 18.5.3 LangGraph Advanced Patterns — HITL, Multi-Agent, Streaming
 
@@ -33850,3 +34831,887 @@ GraphQL vs REST (for frontend consumption):
 ```
 
 📌 **TLDR:** "React = flexible library (largest ecosystem), Vue = progressive framework (easiest learning curve), Angular = full framework (enterprise conventions). Meta-frameworks add SSR/SSG: Next.js (React), Nuxt (Vue), Analog (Angular). Vite is the modern build tool (instant HMR). Test with Testing Library (behavior, not implementation). Micro-frontends for large multi-team apps (Module Federation). Full-stack: CDN + SSR frontend + BFF + API services + data layer."
+
+---
+
+## 28. Authentication & Authorization — OAuth 2.0, OIDC, JWT & SSO
+
+> **📣 Interview-ready definition:** _"OAuth 2.0 is an AUTHORIZATION framework — it answers 'what is this app allowed to do?' NOT 'who is this user?' It lets users grant third-party apps limited access to their resources without sharing passwords. OpenID Connect (OIDC) is the IDENTITY layer built on top of OAuth 2.0 — it answers 'who is this user?' by adding the ID Token. JWT is just a TOKEN FORMAT (a signed JSON envelope). These three work together: OAuth 2.0 (authorization) + OIDC (identity) + JWT (token format) = modern auth stack."_
+
+### 28.1 OAuth 2.0 — The Complete Protocol
+
+```
+What IS OAuth 2.0? (for someone who knows nothing):
+
+  The Valet Key Analogy:
+    Your car key opens everything: doors, trunk, glove box, start engine.
+    A VALET KEY only starts the engine — can't open trunk or glove box.
+
+    OAuth 2.0 = giving apps a VALET KEY to your data
+    Instead of sharing your Google password with a third-party app,
+    you give it a LIMITED access token that can only do specific things.
+
+  Real example:
+    1. You use "Sign in with Google" on Notion
+    2. Notion NEVER sees your Google password
+    3. Google asks YOU: "Notion wants to see your email and name. Allow?"
+    4. You click "Allow"
+    5. Google gives Notion a TOKEN that can ONLY read your email/name
+    6. Notion CANNOT read your Gmail, Drive, or Calendar with that token
+
+  Python analogy:
+    OAuth 2.0 ≈ Django's permissions system, but across applications
+    Token      ≈ a session cookie, but with explicit scopes (permissions)
+    Scopes     ≈ Django permissions like "can_read_email", "can_edit_profile"
+```
+
+#### The 4 Roles in OAuth 2.0
+
+```
+Every OAuth 2.0 flow has exactly 4 players:
+
+  ┌──────────────────────┐     ┌──────────────────────┐
+  │ RESOURCE OWNER       │     │ CLIENT               │
+  │ (the user — YOU)     │     │ (the app — Notion)   │
+  │                      │     │                      │
+  │ "I own the data"     │     │ "I want to access    │
+  │                      │     │  the user's data"    │
+  └──────────┬───────────┘     └──────────┬───────────┘
+             │                            │
+             │  "Allow Notion to          │  "Give me a token
+             │   see your email?"         │   to call Google APIs"
+             │                            │
+  ┌──────────┴───────────┐     ┌──────────┴───────────┐
+  │ AUTHORIZATION SERVER │     │ RESOURCE SERVER       │
+  │ (Google's auth page) │     │ (Google's API)       │
+  │                      │     │                      │
+  │ "I issue tokens"     │     │ "I protect resources" │
+  │ "I verify identity"  │     │ "I validate tokens"  │
+  └──────────────────────┘     └──────────────────────┘
+
+  Django analogy:
+    Resource Owner    ≈ the logged-in user
+    Client            ≈ a third-party app using your API
+    Auth Server       ≈ your Django auth views + token issuer
+    Resource Server   ≈ your Django REST API (protected with permissions)
+```
+
+#### Grant Types — Which Flow for Which Scenario
+
+```
+OAuth 2.0 has 4 grant types (2 are DEPRECATED in OAuth 2.1):
+
+  ┌────────────────────────┬────────────────────────┬─────────────┐
+  │ Grant Type             │ Use Case               │ Status 2026 │
+  ├────────────────────────┼────────────────────────┼─────────────┤
+  │ Authorization Code     │ Web apps, mobile apps, │ ✅ STANDARD │
+  │ + PKCE                 │ SPAs — any user-facing │ (use this!) │
+  ├────────────────────────┼────────────────────────┼─────────────┤
+  │ Client Credentials     │ Machine-to-machine     │ ✅ STANDARD │
+  │                        │ (no user involved)     │             │
+  ├────────────────────────┼────────────────────────┼─────────────┤
+  │ Device Code            │ Smart TVs, IoT, CLI    │ ✅ STANDARD │
+  │                        │ (no browser on device) │             │
+  ├────────────────────────┼────────────────────────┼─────────────┤
+  │ Implicit               │ Was for SPAs           │ ❌ REMOVED  │
+  │ (DEPRECATED)           │                        │ (OAuth 2.1) │
+  ├────────────────────────┼────────────────────────┼─────────────┤
+  │ Resource Owner Password│ Was for trusted apps   │ ❌ REMOVED  │
+  │ (DEPRECATED)           │                        │ (OAuth 2.1) │
+  └────────────────────────┴────────────────────────┴─────────────┘
+
+  Interview rule: if someone mentions Implicit Grant → say it's deprecated
+```
+
+#### Authorization Code + PKCE — The Gold Standard
+
+```
+This is the ONLY flow you should use for user-facing apps in 2026.
+
+  Step-by-step (with "Sign in with Google" example):
+
+  ┌──────────┐           ┌─────────────┐           ┌──────────────┐
+  │  User    │           │  Your App   │           │  Google Auth │
+  │ (browser)│           │  (client)   │           │  Server      │
+  └────┬─────┘           └──────┬──────┘           └──────┬───────┘
+       │                        │                         │
+       │ 1. Click "Sign in     │                         │
+       │    with Google"       │                         │
+       │ ──────────────────>   │                         │
+       │                        │                         │
+       │                        │ 2. Generate PKCE:       │
+       │                        │    code_verifier = random│
+       │                        │    code_challenge =      │
+       │                        │      SHA256(verifier)    │
+       │                        │                         │
+       │ 3. Redirect to Google │                         │
+       │ <─────────────────── │                         │
+       │                        │                         │
+       │ 4. Google login page  │                         │
+       │ ──────────────────────────────────────────────> │
+       │                        │                         │
+       │ 5. User enters        │                         │
+       │    credentials +      │                         │
+       │    clicks "Allow"     │                         │
+       │ ──────────────────────────────────────────────> │
+       │                        │                         │
+       │ 6. Redirect back with │                         │
+       │    authorization CODE │                         │
+       │ <──────────────────────────────────────────── │
+       │                        │                         │
+       │ 7. Pass code to app   │                         │
+       │ ──────────────────>   │                         │
+       │                        │                         │
+       │                        │ 8. Exchange code +      │
+       │                        │    code_verifier for    │
+       │                        │    ACCESS TOKEN         │
+       │                        │ ───────────────────────>│
+       │                        │                         │
+       │                        │ 9. Receive tokens:      │
+       │                        │    access_token (15min)  │
+       │                        │    refresh_token (30d)   │
+       │                        │    id_token (OIDC)       │
+       │                        │ <───────────────────── │
+       │                        │                         │
+       │ 10. Use access_token  │                         │
+       │     to call Google API│                         │
+       │ ──────────────────>   │                         │
+
+  Why PKCE? (Proof Key for Code Exchange):
+    Problem:  someone intercepts the authorization code in step 6
+    Solution: the code is USELESS without the code_verifier (step 8)
+              which never leaves the client
+
+    code_verifier  = random 43-128 character string (generated in step 2)
+    code_challenge = SHA256(code_verifier) (sent in step 3)
+    
+    Google verifies: SHA256(code_verifier) === code_challenge
+    If someone stole the code, they can't exchange it without the verifier
+```
+
+```python
+# === Authorization Code + PKCE in Python ===
+import secrets
+import hashlib
+import base64
+import httpx
+
+# Step 1: Generate PKCE pair
+code_verifier = secrets.token_urlsafe(64)  # random string
+code_challenge = base64.urlsafe_b64encode(
+    hashlib.sha256(code_verifier.encode()).digest()
+).decode().rstrip("=")
+
+# Step 2: Build authorization URL (redirect user here)
+auth_url = (
+    f"https://accounts.google.com/o/oauth2/v2/auth?"
+    f"client_id={CLIENT_ID}"
+    f"&redirect_uri=http://localhost:8000/callback"
+    f"&response_type=code"
+    f"&scope=openid email profile"
+    f"&code_challenge={code_challenge}"
+    f"&code_challenge_method=S256"
+    f"&state={secrets.token_urlsafe(32)}"  # CSRF protection
+)
+
+# Step 3: After user authorizes, exchange code for tokens
+async def exchange_code(authorization_code: str):
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,  # only for confidential clients
+                "code": authorization_code,
+                "code_verifier": code_verifier,  # PKCE proof!
+                "grant_type": "authorization_code",
+                "redirect_uri": "http://localhost:8000/callback",
+            }
+        )
+    tokens = response.json()
+    # tokens = {
+    #   "access_token": "ya29.xxx...",    ← use this to call APIs
+    #   "refresh_token": "1//xxx...",      ← use this to get new access tokens
+    #   "id_token": "eyJhbG...",           ← JWT with user identity (OIDC)
+    #   "expires_in": 3600,
+    #   "token_type": "Bearer"
+    # }
+    return tokens
+```
+
+#### Client Credentials — Machine-to-Machine
+
+```
+For when there's NO USER involved — service-to-service communication.
+
+  Example: your payment microservice → your notification microservice
+           Celery worker → internal API
+           Cron job → data pipeline API
+
+  Flow (simplest of all):
+    ┌─────────────┐                    ┌─────────────────┐
+    │ Your Service │                    │ Auth Server     │
+    └──────┬──────┘                    └────────┬────────┘
+           │                                    │
+           │ 1. POST /token                     │
+           │    client_id + client_secret        │
+           │    grant_type=client_credentials    │
+           │ ──────────────────────────────────> │
+           │                                    │
+           │ 2. access_token (short-lived)      │
+           │ <────────────────────────────────── │
+           │                                    │
+           │ 3. Call API with Bearer token       │
+           │ ──────────────────────────────────> │
+           │    (Resource Server)                │
+
+  No refresh token needed — service just requests a new one when expired.
+```
+
+```python
+# === Client Credentials in Python ===
+import httpx
+
+async def get_m2m_token():
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://auth.example.com/oauth/token",
+            data={
+                "client_id": "service-payment",
+                "client_secret": "secret-from-vault",  # from Secret Manager!
+                "grant_type": "client_credentials",
+                "scope": "notifications:send orders:read",
+            }
+        )
+    return response.json()["access_token"]
+
+# Use the token
+headers = {"Authorization": f"Bearer {await get_m2m_token()}"}
+response = await httpx.get("https://api.internal/orders", headers=headers)
+```
+
+#### Device Code — Smart TVs, IoT, CLI Tools
+
+```
+For devices WITHOUT a browser or keyboard.
+
+  Example: "Sign in on your TV" → go to google.com/device on your phone
+
+  Flow:
+    1. TV shows: "Go to google.com/device and enter code: ABCD-1234"
+    2. User opens phone browser → enters code → logs in → clicks "Allow"
+    3. TV polls the auth server every few seconds
+    4. Once user approves → TV gets access token
+
+  Used by: YouTube on Smart TVs, GitHub CLI, Docker CLI
+```
+
+### 28.2 Tokens — Access, Refresh, ID
+
+```
+The three types of tokens and their purposes:
+
+  ┌─────────────────┬────────────────────────┬──────────────────────┐
+  │ Token           │ Purpose                │ Lifetime             │
+  ├─────────────────┼────────────────────────┼──────────────────────┤
+  │ Access Token    │ Authorize API requests │ Short: 5-15 minutes  │
+  │                 │ "What can this app do?"│ If stolen → limited  │
+  │                 │ Sent in every API call │ damage window        │
+  ├─────────────────┼────────────────────────┼──────────────────────┤
+  │ Refresh Token   │ Get new access tokens  │ Long: 7-30 days      │
+  │                 │ without re-login       │ MUST be stored       │
+  │                 │ Never sent to APIs     │ securely + rotated   │
+  ├─────────────────┼────────────────────────┼──────────────────────┤
+  │ ID Token        │ Prove user identity    │ Short: minutes       │
+  │ (OIDC only)     │ "Who is this user?"    │ NEVER send to APIs!  │
+  │                 │ Contains user claims   │ Only for the client  │
+  └─────────────────┴────────────────────────┴──────────────────────┘
+
+  CRITICAL interview point:
+    ❌ Access Token ≠ "who the user is" (authorization, not identity)
+    ❌ ID Token should NEVER be used to authorize API calls
+    ✅ Access Token → sent to Resource Server (API)
+    ✅ ID Token → consumed by Client app only (to display user info)
+```
+
+#### Token Lifecycle
+
+```
+  User logs in
+       │
+       ▼
+  ┌─────────────┐
+  │ Auth Server  │ issues:
+  │              │   access_token  (15 min)
+  │              │   refresh_token (30 days)
+  │              │   id_token      (OIDC)
+  └──────┬──────┘
+         │
+         ▼
+  ┌──────────────────────────────────────────────────────┐
+  │  HAPPY PATH                                         │
+  │                                                      │
+  │  t=0min:   Use access_token → API returns data ✅   │
+  │  t=14min:  Use access_token → API returns data ✅   │
+  │  t=16min:  Use access_token → 401 EXPIRED ❌        │
+  │                                                      │
+  │  → Send refresh_token to Auth Server                 │
+  │  → Get NEW access_token (15 min) + NEW refresh_token │
+  │  → Old refresh_token is INVALIDATED (rotation!)      │
+  │                                                      │
+  │  t=16min:  Use new access_token → API returns data ✅│
+  │  ...repeat until refresh_token expires (30 days)...  │
+  │                                                      │
+  │  t=30days: refresh_token expired → user must re-login│
+  └──────────────────────────────────────────────────────┘
+
+  Refresh Token Rotation (MANDATORY in 2026):
+    Every time you use a refresh token, the old one is INVALIDATED
+    and you get a NEW refresh token.
+
+    Why? If attacker steals a refresh token and uses it:
+      → auth server detects the OLD token being used AFTER it was rotated
+      → REVOKES the entire token family (all tokens for that session)
+      → user must re-login → attacker loses access
+```
+
+#### JWT Structure — What's Inside
+
+```python
+# A JWT has 3 parts separated by dots: header.payload.signature
+
+import jwt  # pip install PyJWT
+import json
+import base64
+
+# Decoding a JWT (without verification, for inspection)
+token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IlR1c2hhciIsImlhdCI6MTUxNjIzOTAyMn0.signature"
+
+# Part 1: HEADER (algorithm + type)
+# {"alg": "RS256", "typ": "JWT"}
+
+# Part 2: PAYLOAD (claims — the actual data)
+# {
+#   "sub": "1234567890",     ← subject (user ID)
+#   "name": "Tushar",        ← custom claim
+#   "email": "t@example.com",← custom claim
+#   "iss": "https://auth.example.com",  ← issuer (who created this)
+#   "aud": "my-app-client-id",           ← audience (who this is for)
+#   "exp": 1716239022,       ← expiration (Unix timestamp)
+#   "iat": 1716238422,       ← issued at
+#   "scope": "read:profile"  ← permissions
+# }
+
+# Part 3: SIGNATURE (proves the token wasn't tampered with)
+# HMACSHA256(base64(header) + "." + base64(payload), secret)
+
+# === Creating and verifying JWTs ===
+SECRET_KEY = "your-256-bit-secret"
+
+# Create
+payload = {
+    "sub": "user-123",
+    "name": "Tushar",
+    "scope": "read:profile write:profile",
+    "exp": datetime.utcnow() + timedelta(minutes=15),
+    "iat": datetime.utcnow(),
+    "iss": "https://myapp.com",
+    "aud": "myapp-api",
+}
+token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
+# Verify (ALWAYS verify before trusting!)
+try:
+    decoded = jwt.decode(
+        token,
+        SECRET_KEY,
+        algorithms=["HS256"],       # pin the algorithm!
+        audience="myapp-api",       # verify audience
+        issuer="https://myapp.com", # verify issuer
+    )
+except jwt.ExpiredSignatureError:
+    print("Token expired!")
+except jwt.InvalidTokenError:
+    print("Token is invalid!")
+```
+
+```
+JWT Security Pitfalls (interview favorites):
+
+  ❌ Mistake 1: Storing secrets in the payload
+     → payload is base64 encoded, NOT encrypted
+     → ANYONE can decode and read it
+     → never put passwords, SSNs, or sensitive data in JWTs
+
+  ❌ Mistake 2: Not pinning the algorithm
+     → attacker changes header to {"alg": "none"} → signature check skipped!
+     → ALWAYS specify algorithms=["RS256"] in decode()
+
+  ❌ Mistake 3: No expiration
+     → tokens valid forever = permanent access if stolen
+     → ALWAYS set exp claim (15 min for access tokens)
+
+  ❌ Mistake 4: Using JWT for sessions (no revocation)
+     → JWTs are stateless — you can't "invalidate" one without a blocklist
+     → use short-lived access tokens + refresh token rotation instead
+
+  ❌ Mistake 5: Storing tokens in localStorage
+     → XSS attack can steal all tokens
+     → use HTTP-only cookies or secure server-side storage
+
+  ✅ Best practices:
+     → HS256 for internal (shared secret)
+     → RS256 for public (asymmetric — public key verifies, private key signs)
+     → always validate: exp, iss, aud, alg
+     → keep payload small (tokens are sent with EVERY request)
+```
+
+### 28.3 OpenID Connect (OIDC) — Identity Layer
+
+```
+OIDC = OAuth 2.0 + Identity
+
+  OAuth 2.0 alone: "This app can read your emails" (authorization)
+  OIDC adds:       "This user is Tushar (tushar@example.com)" (identity)
+
+  What OIDC adds on top of OAuth 2.0:
+    1. ID Token — a JWT containing user identity claims
+    2. UserInfo endpoint — GET /userinfo returns profile data
+    3. Standard scopes — openid, profile, email, address, phone
+    4. Discovery — /.well-known/openid-configuration (auto-discovery)
+
+  The ID Token payload:
+    {
+      "iss": "https://accounts.google.com",  ← who issued it
+      "sub": "1234567890",                    ← unique user ID
+      "aud": "your-app-client-id",            ← your app
+      "exp": 1716239022,                      ← expires
+      "iat": 1716238422,                      ← issued at
+      "email": "tushar@example.com",          ← user email
+      "name": "Tushar",                       ← display name
+      "picture": "https://...",               ← profile picture
+      "email_verified": true,                 ← email confirmed?
+      "nonce": "abc123"                       ← replay protection
+    }
+
+  Standard OIDC Scopes:
+    ┌──────────┬────────────────────────────────────────┐
+    │ Scope    │ Claims returned                        │
+    ├──────────┼────────────────────────────────────────┤
+    │ openid   │ sub (required to trigger OIDC)         │
+    │ profile  │ name, family_name, given_name, picture │
+    │ email    │ email, email_verified                  │
+    │ address  │ formatted address                      │
+    │ phone    │ phone_number, phone_number_verified    │
+    └──────────┴────────────────────────────────────────┘
+```
+
+```python
+# === OIDC Discovery — auto-configure everything ===
+import httpx
+
+# Every OIDC provider exposes this URL:
+discovery_url = "https://accounts.google.com/.well-known/openid-configuration"
+
+config = httpx.get(discovery_url).json()
+# config = {
+#   "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+#   "token_endpoint": "https://oauth2.googleapis.com/token",
+#   "userinfo_endpoint": "https://openidconnect.googleapis.com/v1/userinfo",
+#   "jwks_uri": "https://www.googleapis.com/oauth2/v3/certs",
+#   "scopes_supported": ["openid", "email", "profile"],
+#   "response_types_supported": ["code"],
+#   ...
+# }
+# → your app auto-configures itself from this!
+# → no hardcoded URLs needed
+```
+
+### 28.4 Token Storage Security
+
+```
+Where to store tokens — the #1 security question in interviews:
+
+  ┌──────────────────────┬──────────┬──────────────────────────────┐
+  │ Storage              │ Safe?    │ Why                          │
+  ├──────────────────────┼──────────┼──────────────────────────────┤
+  │ localStorage         │ ❌ NO    │ XSS attack reads ALL tokens  │
+  │                      │          │ Persists after tab close     │
+  ├──────────────────────┼──────────┼──────────────────────────────┤
+  │ sessionStorage       │ ❌ NO    │ XSS attack still reads them  │
+  │                      │          │ Gone on tab close (annoying) │
+  ├──────────────────────┼──────────┼──────────────────────────────┤
+  │ JavaScript variable  │ ⚠️ WEAK  │ XSS can't access, but lost  │
+  │ (in memory)          │          │ on page refresh              │
+  ├──────────────────────┼──────────┼──────────────────────────────┤
+  │ HTTP-only cookie     │ ✅ BEST  │ JavaScript CANNOT read it    │
+  │ (Secure, SameSite)   │ (web)    │ Sent automatically by browser│
+  │                      │          │ Immune to XSS               │
+  ├──────────────────────┼──────────┼──────────────────────────────┤
+  │ OS Keychain/Keystore │ ✅ BEST  │ Encrypted at OS level        │
+  │                      │ (mobile) │ Biometric protection         │
+  ├──────────────────────┼──────────┼──────────────────────────────┤
+  │ BFF (server-side)    │ ✅ BEST  │ Tokens NEVER reach browser   │
+  │                      │ (SPA)    │ BFF handles all token logic  │
+  └──────────────────────┴──────────┴──────────────────────────────┘
+
+  The BFF (Backend for Frontend) Pattern:
+    Problem: SPAs (React/Vue/Angular) can't securely store tokens
+    Solution: put a thin backend between the SPA and the auth server
+
+    ┌────────┐   cookie    ┌──────┐   Bearer token   ┌──────────┐
+    │  SPA   │ ──────────> │ BFF  │ ────────────────> │ API      │
+    │(React) │ <────────── │(thin │ <──────────────── │ Server   │
+    │        │   (no token │ proxy│   (tokens stored  │          │
+    │        │   in JS!)   │ )    │    server-side!)  │          │
+    └────────┘             └──────┘                   └──────────┘
+
+    SPA only has a session cookie (HTTP-only)
+    BFF holds the actual access/refresh tokens server-side
+    If XSS hits the SPA → attacker gets nothing useful
+```
+
+### 28.5 SAML vs OIDC vs OAuth 2.0
+
+```
+Three protocols, three purposes:
+
+  ┌──────────┬───────────────────┬────────────────────┬──────────────┐
+  │          │ OAuth 2.0         │ OIDC               │ SAML 2.0     │
+  ├──────────┼───────────────────┼────────────────────┼──────────────┤
+  │ Purpose  │ Authorization     │ Authentication +   │ Authentication│
+  │          │ (access to        │ Authorization      │ (enterprise  │
+  │          │ resources)        │ (identity + access)│ SSO)         │
+  ├──────────┼───────────────────┼────────────────────┼──────────────┤
+  │ Format   │ JSON + HTTP       │ JSON + JWT + HTTP  │ XML + SOAP   │
+  ├──────────┼───────────────────┼────────────────────┼──────────────┤
+  │ Token    │ Access Token      │ ID Token + Access  │ SAML         │
+  │          │ (opaque or JWT)   │ Token (both JWT)   │ Assertion    │
+  ├──────────┼───────────────────┼────────────────────┼──────────────┤
+  │ Best for │ API access,       │ Modern apps, SSO,  │ Enterprise   │
+  │          │ third-party       │ mobile, SPAs       │ legacy, ADFS │
+  │          │ delegated access  │                    │ Okta, Azure  │
+  ├──────────┼───────────────────┼────────────────────┼──────────────┤
+  │ 2026     │ Use with OIDC     │ ✅ DEFAULT choice  │ Legacy only  │
+  │ advice   │ for full auth     │ for new projects   │ for existing │
+  └──────────┴───────────────────┴────────────────────┴──────────────┘
+
+  Interview answer:
+    "For new projects in 2026, use OIDC (which IS OAuth 2.0 + identity).
+     SAML only for enterprise integrations with legacy IdPs like ADFS.
+     Never implement just OAuth 2.0 alone — you almost always need
+     identity too, so use OIDC."
+```
+
+### 28.6 OAuth 2.0 vs OAuth 2.1
+
+```
+OAuth 2.1 is NOT a new protocol — it's a "security cleanup" of OAuth 2.0.
+It makes best practices MANDATORY:
+
+  ┌────────────────────────┬──────────────────┬──────────────────────┐
+  │ Change                 │ OAuth 2.0        │ OAuth 2.1            │
+  ├────────────────────────┼──────────────────┼──────────────────────┤
+  │ PKCE                   │ Optional         │ MANDATORY for ALL    │
+  │                        │ (recommended)    │ clients              │
+  ├────────────────────────┼──────────────────┼──────────────────────┤
+  │ Implicit Grant         │ Allowed          │ REMOVED              │
+  ├────────────────────────┼──────────────────┼──────────────────────┤
+  │ Password Grant (ROPC)  │ Allowed          │ REMOVED              │
+  ├────────────────────────┼──────────────────┼──────────────────────┤
+  │ Redirect URI matching  │ Loose (wildcards │ EXACT string match   │
+  │                        │ allowed)         │ only                 │
+  ├────────────────────────┼──────────────────┼──────────────────────┤
+  │ Tokens in query params │ Allowed          │ FORBIDDEN            │
+  │                        │                  │ (prevents leakage    │
+  │                        │                  │ via browser history) │
+  ├────────────────────────┼──────────────────┼──────────────────────┤
+  │ Refresh token rotation │ Optional         │ REQUIRED for public  │
+  │                        │                  │ clients              │
+  └────────────────────────┴──────────────────┴──────────────────────┘
+
+  DPoP — Demonstrating Proof of Possession (advanced):
+    Problem: Bearer tokens = anyone who HAS the token can USE it
+    DPoP: cryptographically BINDS the token to the specific client
+
+    How: client generates a key pair, sends a signed proof JWT with
+    every request. Even if token is intercepted, attacker can't use
+    it because they don't have the private key.
+
+    Think of it as: Bearer token = cash (anyone can spend it)
+                    DPoP token  = credit card (only owner can use it)
+```
+
+### 28.7 SSO — Single Sign-On
+
+```
+SSO = log in ONCE, access MULTIPLE applications
+
+  Example: log into Google → automatically logged into Gmail,
+           YouTube, Google Drive, Google Calendar
+
+  How SSO works with OIDC:
+    1. User visits App A → not logged in
+    2. App A redirects to Identity Provider (IdP) — e.g., Okta
+    3. User logs in to IdP (just once!)
+    4. IdP creates a SESSION for the user
+    5. IdP redirects back to App A with tokens → user is logged in
+    6. User visits App B → not logged in
+    7. App B redirects to SAME IdP
+    8. IdP sees existing session → NO login needed!
+    9. IdP redirects back to App B with tokens → user is logged in
+
+  Common SSO providers:
+    Enterprise:  Okta, Azure AD / Entra ID, Auth0, OneLogin, Ping Identity
+    Social:      Google, GitHub, Apple, Facebook, Microsoft
+    Open source: Keycloak, Authentik, Ory
+
+  Python analogy:
+    SSO ≈ Django's session middleware, but across MULTIPLE apps
+    IdP ≈ a shared Django auth server that all apps trust
+```
+
+### 28.8 Real-World Implementation (FastAPI)
+
+```python
+# === Complete OAuth 2.0 + OIDC with FastAPI ===
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
+from pydantic import BaseModel
+
+app = FastAPI()
+
+# === Config ===
+SECRET_KEY = "your-secret-from-env-not-hardcoded"
+ALGORITHM = "HS256"  # Use RS256 in production (asymmetric)
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+
+# === Models ===
+class Token(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+class TokenData(BaseModel):
+    sub: str
+    scopes: list[str] = []
+
+# === Token creation ===
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    to_encode.update({
+        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        "iat": datetime.utcnow(),
+        "type": "access",
+    })
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def create_refresh_token(data: dict) -> str:
+    to_encode = data.copy()
+    to_encode.update({
+        "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "iat": datetime.utcnow(),
+        "type": "refresh",
+    })
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+# === Login endpoint ===
+@app.post("/auth/token", response_model=Token)
+async def login(form: OAuth2PasswordRequestForm = Depends()):
+    user = await authenticate_user(form.username, form.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    access_token = create_access_token({"sub": user.id, "scopes": user.scopes})
+    refresh_token = create_refresh_token({"sub": user.id})
+
+    # Store refresh token hash in DB (for rotation/revocation)
+    await store_refresh_token(user.id, refresh_token)
+
+    return Token(access_token=access_token, refresh_token=refresh_token)
+
+# === Token refresh with rotation ===
+@app.post("/auth/refresh", response_model=Token)
+async def refresh(refresh_token: str):
+    try:
+        payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Not a refresh token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Verify refresh token exists in DB (rotation check!)
+    if not await is_valid_refresh_token(payload["sub"], refresh_token):
+        # Token reuse detected! Revoke ALL tokens for this user
+        await revoke_all_tokens(payload["sub"])
+        raise HTTPException(status_code=401, detail="Token reuse detected!")
+
+    # Rotate: invalidate old, issue new
+    await invalidate_refresh_token(refresh_token)
+    new_access = create_access_token({"sub": payload["sub"]})
+    new_refresh = create_refresh_token({"sub": payload["sub"]})
+    await store_refresh_token(payload["sub"], new_refresh)
+
+    return Token(access_token=new_access, refresh_token=new_refresh)
+
+# === Protected endpoint ===
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Not an access token")
+        return TokenData(sub=payload["sub"], scopes=payload.get("scopes", []))
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# === RBAC — Role-Based Access Control ===
+def require_scope(required: str):
+    """Dependency factory for scope-based authorization."""
+    async def check_scope(user: TokenData = Depends(get_current_user)):
+        if required not in user.scopes:
+            raise HTTPException(status_code=403, detail=f"Scope '{required}' required")
+        return user
+    return check_scope
+
+@app.get("/admin/users")
+async def list_users(user: TokenData = Depends(require_scope("admin:read"))):
+    return {"users": [...]}
+
+@app.get("/profile")
+async def get_profile(user: TokenData = Depends(get_current_user)):
+    return {"user_id": user.sub}
+```
+
+### 28.9 Security Checklist & Common Attacks
+
+```
+OAuth 2.0 / JWT Security Checklist:
+
+  Token Security:
+    ✅ Access tokens: 5-15 minutes expiry
+    ✅ Refresh tokens: rotate on every use (one-time-use)
+    ✅ Pin JWT algorithm — always specify algorithms=["RS256"]
+    ✅ Validate: exp, iss, aud, alg on every request
+    ✅ Use RS256 (asymmetric) for public APIs, HS256 for internal
+    ✅ Never put sensitive data in JWT payload (it's NOT encrypted)
+
+  Storage Security:
+    ✅ Web: HTTP-only, Secure, SameSite=Strict cookies
+    ✅ SPA: BFF pattern (tokens server-side, session cookie to browser)
+    ✅ Mobile: OS Keychain (iOS) / Keystore (Android)
+    ✅ Never localStorage or sessionStorage for tokens
+
+  OAuth Flow Security:
+    ✅ PKCE mandatory for ALL authorization code flows
+    ✅ Exact redirect URI matching (no wildcards)
+    ✅ State parameter for CSRF protection
+    ✅ Never Implicit Grant or Password Grant (deprecated)
+    ✅ Verify code_challenge on code exchange
+
+  Infrastructure:
+    ✅ HTTPS everywhere (no HTTP, ever)
+    ✅ CORS: restrict origins to your domains only
+    ✅ Rate-limit token endpoints (prevent brute force)
+    ✅ Log all token issuance/refresh for audit trail
+    ✅ Secret rotation for client_secret and signing keys
+
+  Common Attacks:
+    ┌──────────────────────┬───────────────────────────────────────┐
+    │ Attack               │ Prevention                            │
+    ├──────────────────────┼───────────────────────────────────────┤
+    │ Code Interception    │ PKCE (code_verifier binds to client)  │
+    │ Token Theft (XSS)    │ HTTP-only cookies / BFF pattern       │
+    │ Token Replay         │ DPoP (sender-constrained tokens)      │
+    │ CSRF                 │ State parameter + SameSite cookies    │
+    │ Redirect URI Attack  │ Exact string matching (no wildcards)  │
+    │ Refresh Token Theft  │ Rotation + reuse detection + revoke   │
+    │ Algorithm Confusion  │ Pin algorithms=["RS256"] in decode()  │
+    │ JWT None Attack      │ Reject tokens with alg="none"         │
+    │ Consent Phishing     │ User education + admin consent review │
+    └──────────────────────┴───────────────────────────────────────┘
+```
+
+### 28.10 OAuth 2.0 Interview Q&A
+
+```
+Q: What is OAuth 2.0?
+A: An AUTHORIZATION framework — NOT authentication. It lets users
+   grant third-party apps limited access to their resources without
+   sharing passwords. Uses access tokens with scopes (permissions).
+   "It's the valet key — limited access, not full access."
+
+Q: What's the difference between OAuth 2.0 and OIDC?
+A: OAuth 2.0 = authorization ("what can this app do?").
+   OIDC = identity layer ON TOP of OAuth 2.0 ("who is this user?").
+   OIDC adds: ID Token (JWT with user claims), UserInfo endpoint,
+   standard scopes (openid, profile, email), and discovery endpoint.
+
+Q: Explain the Authorization Code + PKCE flow.
+A: (1) Client generates code_verifier + code_challenge (SHA256).
+   (2) Redirect user to auth server with code_challenge.
+   (3) User logs in, consents, auth server returns authorization code.
+   (4) Client exchanges code + code_verifier for tokens.
+   (5) Auth server verifies SHA256(verifier) === challenge.
+   PKCE prevents code interception — stolen code is useless without verifier.
+
+Q: What's the difference between Access Token and ID Token?
+A: Access Token = for the API (authorization — "what can this app do?").
+   ID Token = for the client app (identity — "who is this user?").
+   NEVER use an ID Token to authorize API calls.
+   NEVER send an Access Token to get user identity.
+
+Q: How do you handle token storage securely?
+A: Web: HTTP-only, Secure, SameSite cookies (not localStorage — XSS risk).
+   SPA: BFF pattern — tokens stored server-side, session cookie to browser.
+   Mobile: OS Keychain (iOS) / Keystore (Android).
+   NEVER localStorage or sessionStorage — XSS can steal them.
+
+Q: What is Refresh Token Rotation?
+A: Every time a refresh token is used, the old one is invalidated and
+   a new one is issued. If attacker steals and uses an old refresh token,
+   the auth server detects token reuse → revokes the ENTIRE token family
+   → user must re-login → attacker loses access.
+
+Q: Why is the Implicit Grant deprecated?
+A: It returned tokens in the URL fragment (#access_token=xxx), which was
+   visible in browser history, server logs, and Referer headers. OAuth 2.1
+   removes it entirely. Use Authorization Code + PKCE instead.
+
+Q: OAuth 2.0 vs API Keys — when to use which?
+A: API Keys = simple, no user context, for M2M or public APIs with
+   rate limiting. OAuth 2.0 = user-delegated access, fine-grained
+   scopes, revocable, standard protocol. Use API keys for simple
+   integrations; OAuth for user data access.
+
+Q: What is DPoP?
+A: Demonstrating Proof of Possession — binds tokens to the client
+   cryptographically. Client generates a key pair, signs a proof JWT
+   with every request. Even if token is stolen, attacker can't use it
+   without the private key. Bearer token = cash; DPoP = credit card.
+
+Q: How do you implement SSO?
+A: Use OIDC with a shared Identity Provider (Okta, Azure AD, Keycloak).
+   All apps redirect to the same IdP for login. After first login,
+   IdP maintains a session — subsequent apps get tokens without re-login.
+   For enterprise: often SAML for legacy + OIDC for modern apps.
+
+Q: SAML vs OIDC — when to use which?
+A: OIDC = default for all new development (JSON, JWT, API-friendly,
+   mobile-compatible). SAML = only for enterprise legacy integrations
+   (XML-based, browser-only, complex but mature). Most enterprise IdPs
+   support both — use OIDC unless forced into SAML by legacy systems.
+
+Q: What JWT claims should you ALWAYS validate?
+A: exp (not expired), iss (trusted issuer), aud (intended for your app),
+   alg (pinned algorithm — never accept "none"). For OIDC ID tokens:
+   also validate nonce (replay protection) and at_hash (token binding).
+```
+
+📌 **TLDR:** "OAuth 2.0 = authorization framework (valet key — limited access). OIDC = identity layer on top (ID Token = who the user is). JWT = signed JSON token format. In 2026: ONLY use Authorization Code + PKCE for user-facing apps (Implicit/Password grants are deprecated in OAuth 2.1). PKCE binds the auth code to the client so stolen codes are useless. Three tokens: Access (5-15min, sent to APIs), Refresh (30d, rotated on every use), ID (identity, never sent to APIs). Store tokens in HTTP-only cookies (web) or OS Keychain (mobile) — NEVER localStorage. For SPAs use the BFF pattern (tokens server-side). SSO via OIDC with a shared IdP (Okta/Azure AD/Keycloak). SAML only for legacy enterprise. DPoP for sender-constrained tokens."
